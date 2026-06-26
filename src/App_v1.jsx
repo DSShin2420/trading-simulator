@@ -5,7 +5,6 @@ import {
 } from 'recharts';
 import { ChevronRight, RotateCcw, Download, X, TrendingUp, TrendingDown, Clock, ZoomIn, ZoomOut, Maximize2, Upload } from 'lucide-react';
 
-// ---------- 랜덤 데이터 생성 ----------
 function generateData(days) {
   const data = [];
   let price = 50000;
@@ -20,16 +19,23 @@ function generateData(days) {
     data.push({
       idx: i,
       date: date.toISOString().slice(0, 10),
-      open: Math.round(open), high: Math.round(high),
-      low: Math.round(low), close: Math.round(close),
-      volume, range: [Math.round(low), Math.round(high)],
+      open: Math.round(open),
+      high: Math.round(high),
+      low: Math.round(low),
+      close: Math.round(close),
+      volume,
+      range: [Math.round(low), Math.round(high)],
     });
     price = close;
     date.setDate(date.getDate() + 1);
     while (date.getDay() === 0 || date.getDay() === 6) date.setDate(date.getDate() + 1);
   }
   for (let i = 0; i < data.length; i++) {
-    const s = (n) => { let t = 0; for (let k = 0; k < n; k++) t += data[i - k].close; return Math.round(t / n); };
+    const s = (n) => {
+      let t = 0;
+      for (let k = 0; k < n; k++) t += data[i - k].close;
+      return Math.round(t / n);
+    };
     if (i >= 4) data[i].ma5 = s(5);
     if (i >= 19) data[i].ma20 = s(20);
     if (i >= 59) data[i].ma60 = s(60);
@@ -40,7 +46,6 @@ function generateData(days) {
 
 const fmt = (n) => Math.round(n).toLocaleString('ko-KR');
 
-// 두 'YYYY-MM-DD' 날짜 문자열 사이의 실제 달력일수 차이 (주말 포함)
 const calendarDaysBetween = (dateStrA, dateStrB) => {
   const a = new Date(dateStrA + 'T00:00:00');
   const b = new Date(dateStrB + 'T00:00:00');
@@ -56,8 +61,6 @@ function niceStep(range, targetTicks = 6) {
   return nice * mag;
 }
 
-// ---------- CSV 파싱 ----------
-// 입력 형식: 날짜,시가,고가,저가,종가,MA5,MA20,MA60,MA120,거래량 (탭/쉼표/공백 구분 모두 지원)
 function parseCustomData(text) {
   const lines = text.trim().split(/\r?\n/).filter((l) => l.trim().length > 0);
   if (!lines.length) return null;
@@ -70,7 +73,6 @@ function parseCustomData(text) {
     return cols.map((c) => c.trim());
   });
 
-  // 첫 줄이 헤더(날짜 형식이 아님)면 제거
   if (!/^\d{4}[-./]\d{1,2}[-./]\d{1,2}/.test(rows[0][0])) rows = rows.slice(1);
 
   const num = (v) => {
@@ -85,20 +87,25 @@ function parseCustomData(text) {
     if ([o, h, l, c].some((v) => v === undefined)) return null;
     return {
       date: (date || '').replace(/[./]/g, '-'),
-      open: o, high: h, low: l, close: c,
-      ma5: num(ma5), ma20: num(ma20), ma60: num(ma60), ma120: num(ma120),
-      volume: num(volume) ?? 0, range: [l, h],
+      open: o,
+      high: h,
+      low: l,
+      close: c,
+      ma5: num(ma5),
+      ma20: num(ma20),
+      ma60: num(ma60),
+      ma120: num(ma120),
+      volume: num(volume) ?? 0,
+      range: [l, h],
     };
   }).filter(Boolean);
 
   if (!data.length) return null;
-  // 날짜 오름차순 정렬 (최신순/과거순 어느 쪽으로 입력해도 자동 인식)
   data.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   data.forEach((d, i) => { d.idx = i; });
   return data;
 }
 
-// ---------- ZIP 읽기 (메타데이터만 먼저 읽고, 압축 해제는 사용 시점에) ----------
 function listZipEntries(buffer) {
   const view = new DataView(buffer);
   const bytes = new Uint8Array(buffer);
@@ -148,21 +155,19 @@ async function getZipEntryText(buffer, entry) {
   return new TextDecoder('utf-8').decode(outBytes);
 }
 
-// ---------- 랜덤 시작 인덱스 ----------
-// 가능하면 최소 20일치 과거 데이터를 보여주고, 마지막 150일은 남겨두고 시작
 const randomStart = (len) => {
   const minStart = Math.min(20, Math.max(0, len - 1));
   const maxStart = Math.max(minStart, len - 1 - 150);
   return minStart + Math.floor(Math.random() * (maxStart - minStart + 1));
 };
 
-// ---------- 캔들 컴포넌트 ----------
 const Candle = ({ x, y, width, height, payload }) => {
   if (!payload || payload.high === payload.low) return null;
   const isUp = payload.close >= payload.open;
   const color = isUp ? '#ef4444' : '#3b82f6';
   const scale = (v) => y + ((payload.high - v) / (payload.high - payload.low)) * height;
-  const openY = scale(payload.open), closeY = scale(payload.close);
+  const openY = scale(payload.open);
+  const closeY = scale(payload.close);
   const bodyTop = Math.min(openY, closeY);
   const bodyH = Math.max(Math.abs(closeY - openY), 1);
   const cx = x + width / 2;
@@ -193,33 +198,30 @@ const ChartTooltip = ({ active, payload }) => {
   );
 };
 
-// ---------- 메인 컴포넌트 ----------
 const START_CASH = 10_000_000;
 
 export default function TradingSimulator() {
   const [allData, setAllData] = useState(() => generateData(300));
   const [dataSource, setDataSource] = useState('랜덤 데이터');
   const [csvText, setCsvText] = useState('');
-  const [customDatasets, setCustomDatasets] = useState([]); // [{id, name, kind:'text'|'zip', raw?, buffer?, zipEntry?}]
+  const [customDatasets, setCustomDatasets] = useState([]);
   const [showDataPanel, setShowDataPanel] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(() => randomStart(300));
   const [cash, setCash] = useState(START_CASH);
   const [shares, setShares] = useState(0);
   const [avgCost, setAvgCost] = useState(0);
-  const [toppedUp, setToppedUp] = useState(0);          // 게임 시작(초기화) 이후 충전한 누적 금액 — 전체 게임 수익률 계산용
-  const [chartStartValue, setChartStartValue] = useState(START_CASH); // 이번 차트가 시작된 시점의 평가금액 (차트 수익률 기준점)
-  const [chartToppedUp, setChartToppedUp] = useState(0); // 이번 차트 보고 있는 동안 충전한 금액 — 차트 수익률 계산용
+  const [toppedUp, setToppedUp] = useState(0);
+  const [chartStartValue, setChartStartValue] = useState(START_CASH);
+  const [chartToppedUp, setChartToppedUp] = useState(0);
   const [pendingOrders, setPendingOrders] = useState([]);
   const [tradeLog, setTradeLog] = useState([]);
-  const [positionOpenIdx, setPositionOpenIdx] = useState(null); // 현재 보유 포지션이 시작된 날짜 인덱스 (무포지션이면 null)
-  const [gameHeldDays, setGameHeldDays] = useState(0); // 게임 전체에서 "완전 청산 완료된" 포지션들의 보유 거래일수 합계
-  const [gameHeldCalendarDays, setGameHeldCalendarDays] = useState(0); // 위와 동일하되, 주말 포함 실제 달력일수 기준
-  const [chartHeldDays, setChartHeldDays] = useState(0); // 이번 차트에서 "완전 청산 완료된" 포지션들의 거래일수 누적
-  const [chartHeldCalendarDays, setChartHeldCalendarDays] = useState(0); // 위와 동일하되 달력일 기준
+  const [positionOpenIdx, setPositionOpenIdx] = useState(null);
+  const [gameHeldDays, setGameHeldDays] = useState(0);
+  const [gameHeldCalendarDays, setGameHeldCalendarDays] = useState(0);
   const [qty, setQty] = useState(10);
   const [price, setPrice] = useState(0);
   const [showGridPanel, setShowGridPanel] = useState(false);
-  const [gridSide, setGridSide] = useState('buy'); // 'buy' | 'sell'
+  const [gridSide, setGridSide] = useState('buy');
   const [gridBasePrice, setGridBasePrice] = useState(0);
   const [gridStep, setGridStep] = useState(500);
   const [gridQtyPerStep, setGridQtyPerStep] = useState(10);
@@ -235,42 +237,25 @@ export default function TradingSimulator() {
   const visible = useMemo(() => allData.slice(0, currentIndex + 1), [allData, currentIndex]);
   const portfolioValue = cash + shares * today.close;
 
-  // ① 포지션 손익: 지금 보유 중인 주식만의 실시간 평가손익 (금액+%). 매도 전 "지금 팔면 얼마인지" 참고용.
   const costBasis = avgCost * shares;
   const positionPnl = shares * today.close - costBasis;
   const positionReturnPct = costBasis > 0 ? (positionPnl / costBasis) * 100 : 0;
 
-  // ② 이번 차트 누적 수익률: 지금 이 차트로 전환된 시점부터의 손익.
-  // "차트 새로고침"을 누르면 chartStartValue가 그 시점 평가금액으로 다시 스냅샷되어 0%부터 새로 시작합니다.
   const chartInvested = chartStartValue + chartToppedUp;
   const chartPnl = portfolioValue - chartInvested;
   const chartReturnPct = chartInvested > 0 ? (chartPnl / chartInvested) * 100 : 0;
 
-  // ③ 전체 게임 누적 수익률: "초기화"로 게임을 새로 시작한 시점부터 지금까지의 전체 손익.
-  // 총 투입원금 = START_CASH + 게임 전체 충전 누적액(toppedUp). 차트가 여러 번 바뀌어도 유지됩니다.
   const gameInvested = START_CASH + toppedUp;
   const gamePnl = portfolioValue - gameInvested;
   const returnPct = gameInvested > 0 ? (gamePnl / gameInvested) * 100 : 0;
 
-  // 보유 기간: 단순히 "차트를 보고 있던 날짜 수"가 아니라, 매수해서 전량 매도할 때까지의 실제 포지션 보유기간.
-  // 세 가지 단위로 계산합니다:
-  // - 거래일 기준: allData 인덱스 차이 (주말·휴장일은 애초에 데이터에 없으므로 자동으로 제외됨)
-  // - 실제 기간(달력일) 기준: 날짜 문자열 차이 (매수일~매도일 사이 주말 등 포함한 실제 캘린더 경과일)
-  // - 실제 연수: 달력일을 365로 나눈 값 (목표 수익까지 실제로 몇 년이 걸리는지 감 잡기용)
-  //
-  // "이번 차트 보유 기간" = 이번 차트에서 이미 청산 완료된 기간(chartHeldDays) + 지금 진행 중인 기간
-  // → 청산 후에도 0으로 리셋되지 않고 이번 차트 전체 보유 기간이 누적 표시됩니다.
-  const inProgressDays = positionOpenIdx !== null ? currentIndex - positionOpenIdx : 0;
-  const inProgressCalendarDays = positionOpenIdx !== null
-    ? calendarDaysBetween(allData[positionOpenIdx].date, today.date) : 0;
+  const currentChartHeldDays = positionOpenIdx !== null ? currentIndex - positionOpenIdx : 0;
+  const currentChartHeldCalendarDays = positionOpenIdx !== null
+    ? calendarDaysBetween(allData[positionOpenIdx].date, today.date)
+    : 0;
 
-  const currentChartHeldDays = chartHeldDays + inProgressDays;
-  const currentChartHeldCalendarDays = chartHeldCalendarDays + inProgressCalendarDays;
-  const currentChartHeldYears = currentChartHeldCalendarDays / 365;
-
-  const gameTotalHeldDays = gameHeldDays + inProgressDays;
-  const gameTotalHeldCalendarDays = gameHeldCalendarDays + inProgressCalendarDays;
-  const gameTotalHeldYears = gameTotalHeldCalendarDays / 365;
+  const gameTotalHeldDays = gameHeldDays + currentChartHeldDays;
+  const gameTotalHeldCalendarDays = gameHeldCalendarDays + currentChartHeldCalendarDays;
 
   const { yDomain, yTicks } = useMemo(() => {
     const vis = visible.slice(-zoomDays);
@@ -298,26 +283,20 @@ export default function TradingSimulator() {
 
   const log = (entry) => setTradeLog((prev) => [...prev, entry]);
 
-  // 보유수량이 0 → 양수가 되면 포지션 시작 기록, 양수 → 0이 되면 보유 기간을 게임 누적에 더함
   const trackPositionOnSharesChange = (prevShares, newShares, idxAtChange) => {
     if (prevShares === 0 && newShares > 0) {
       setPositionOpenIdx(idxAtChange);
     } else if (prevShares > 0 && newShares === 0) {
       setPositionOpenIdx((openIdx) => {
         if (openIdx !== null) {
-          const tradingDays = idxAtChange - openIdx;
-          const calDays = calendarDaysBetween(allData[openIdx].date, allData[idxAtChange].date);
-          setGameHeldDays((d) => d + tradingDays);
-          setGameHeldCalendarDays((d) => d + calDays);
-          setChartHeldDays((d) => d + tradingDays);
-          setChartHeldCalendarDays((d) => d + calDays);
+          setGameHeldDays((d) => d + (idxAtChange - openIdx));
+          setGameHeldCalendarDays((d) => d + calendarDaysBetween(allData[openIdx].date, allData[idxAtChange].date));
         }
         return null;
       });
     }
   };
 
-  // 시장가 매수/매도 — 당일 종가로 즉시 체결
   const placeMarketOrder = (orderSide) => {
     const q = Number(qty);
     if (!q || q <= 0) { setMessage('수량을 입력해주세요.'); return; }
@@ -343,7 +322,6 @@ export default function TradingSimulator() {
     }
   };
 
-  // 예약 매수/매도 — 입력된 가격 1개로 단일 예약 주문 등록
   const placeLimitOrder = (orderSide) => {
     const q = Number(qty);
     if (!q || q <= 0) { setMessage('수량을 입력해주세요.'); return; }
@@ -353,8 +331,6 @@ export default function TradingSimulator() {
     setPendingOrders((prev) => [...prev, { id: `limit:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`, side: orderSide, qty: q, price: p, placedDate: today.date }]);
   };
 
-  // 계단식(그리드) 예약 주문 — 기준가에서 일정 간격으로 내려가며(매수) 또는 올라가며(매도)
-  // 여러 단계의 예약 주문을 한 번에 등록. 예: 10000원부터 500원씩 5000원까지 10개씩 매수 예약.
   const placeGridOrders = (orderSide, basePrice, step, qtyPerStep, steps) => {
     const b = Number(basePrice), s = Number(step), q = Number(qtyPerStep), n = Number(steps);
     if (!b || b <= 0) { setMessage('기준 가격을 입력해주세요.'); return; }
@@ -362,41 +338,33 @@ export default function TradingSimulator() {
     if (!q || q <= 0) { setMessage('단계별 수량을 입력해주세요.'); return; }
     if (!n || n <= 0) { setMessage('단계 수를 입력해주세요.'); return; }
 
-    // 이미 걸려 있는 같은 방향 예약 주문의 소요 자금/수량도 함께 고려해서,
-    // 가용 한도(현금 또는 보유 수량)를 넘기는 단계부터는 자동으로 생략합니다.
-    const existingSameSide = pendingOrders.filter((o) => o.side === orderSide);
-    let budgetRemaining = orderSide === 'buy'
-      ? cash - existingSameSide.reduce((sum, o) => sum + o.price * o.qty, 0)
-      : shares - existingSameSide.reduce((sum, o) => sum + o.qty, 0);
-
     const newOrders = [];
-    let skipped = 0;
     for (let i = 0; i < n; i++) {
       const stepPrice = orderSide === 'buy' ? b - s * i : b + s * i;
       if (stepPrice <= 0) break;
-      const stepCost = orderSide === 'buy' ? Math.round(stepPrice) * q : q;
-      if (stepCost > budgetRemaining) { skipped++; continue; } // 이 단계만 자금/수량 부족으로 생략, 나머지 단계는 계속 시도
-      budgetRemaining -= stepCost;
       newOrders.push({
         id: `grid:${Date.now()}:${i}:${Math.random().toString(36).slice(2, 8)}`,
         side: orderSide, qty: q, price: Math.round(stepPrice), placedDate: today.date,
       });
     }
-
-    if (!newOrders.length) {
-      setMessage(orderSide === 'buy'
-        ? '등록할 수 있는 예약 주문이 없습니다. 현금이 부족하거나 입력값을 확인해주세요.'
-        : '등록할 수 있는 예약 주문이 없습니다. 보유 수량이 부족하거나 입력값을 확인해주세요.');
-      return;
-    }
+    if (!newOrders.length) { setMessage('등록할 예약 주문이 없습니다. 입력값을 확인해주세요.'); return; }
 
     setPendingOrders((prev) => [...prev, ...newOrders]);
 
-    const priceRangeMsg = `(가격: ${fmt(newOrders[0].price)}원 ~ ${fmt(newOrders[newOrders.length - 1].price)}원)`;
-    if (skipped > 0) {
-      setMessage(`${orderSide === 'buy' ? '매수' : '매도'} 그리드 ${newOrders.length}건 등록 완료 ${priceRangeMsg}. ${orderSide === 'buy' ? '현금' : '보유 수량'}이 부족해 ${skipped}건은 자동으로 생략되었습니다.`);
+    if (orderSide === 'buy') {
+      const totalCost = newOrders.reduce((sum, o) => sum + o.price * o.qty, 0);
+      if (totalCost > cash) {
+        setMessage(`매수 그리드 ${newOrders.length}건 등록 완료 (가격: ${fmt(newOrders[0].price)}~${fmt(newOrders[newOrders.length - 1].price)}원). 단, 전부 체결되려면 ${fmt(totalCost)}원이 필요한데 현재 현금은 ${fmt(cash)}원입니다 — 현금이 부족한 주문은 그날 체결되지 않고 대기 상태로 남습니다.`);
+      } else {
+        setMessage(`매수 그리드 예약 ${newOrders.length}건 등록 완료 (가격: ${fmt(newOrders[0].price)}원 ~ ${fmt(newOrders[newOrders.length - 1].price)}원)`);
+      }
     } else {
-      setMessage(`${orderSide === 'buy' ? '매수' : '매도'} 그리드 예약 ${newOrders.length}건 등록 완료 ${priceRangeMsg}`);
+      const totalQty = newOrders.reduce((sum, o) => sum + o.qty, 0);
+      if (totalQty > shares) {
+        setMessage(`매도 그리드 ${newOrders.length}건 등록 완료 (가격: ${fmt(newOrders[0].price)}~${fmt(newOrders[newOrders.length - 1].price)}원). 단, 전부 체결되려면 ${totalQty}주가 필요한데 현재 보유 수량은 ${shares}주입니다 — 수량이 부족한 주문은 체결되지 않습니다.`);
+      } else {
+        setMessage(`매도 그리드 예약 ${newOrders.length}건 등록 완료 (가격: ${fmt(newOrders[0].price)}원 ~ ${fmt(newOrders[newOrders.length - 1].price)}원)`);
+      }
     }
     setShowGridPanel(false);
   };
@@ -407,7 +375,6 @@ export default function TradingSimulator() {
     setPendingOrders((prev) => prev.filter((x) => x.id !== id));
   };
 
-  // 매수 예약 전체 취소 / 매도 예약 전체 취소 — 그리드로 여러 건 걸어둔 걸 한 번에 정리
   const cancelAllOrders = (side) => {
     const toCancel = pendingOrders.filter((o) => o.side === side);
     if (!toCancel.length) {
@@ -421,15 +388,13 @@ export default function TradingSimulator() {
     setMessage(`${side === 'buy' ? '매수' : '매도'} 예약 ${toCancel.length}건을 모두 취소했습니다.`);
   };
 
-  // 하루를 진행시키는 순수 계산: 현재 상태(state)를 받아 다음날 상태를 계산해서 반환.
-  // React state를 직접 건드리지 않으므로, 여러 번 연속 호출해도(advanceDays) 누적 계산이 정확합니다.
-  const computeNextDayState = (state) => {
-    const { idx, cash: c, shares: sh, avgCost: avg, pendingOrders: pending } = state;
-    if (idx + 1 >= allData.length) return null;
-    const next = allData[idx + 1];
-    let nextCash = c, nextShares = sh, nextAvg = avg;
+  const nextDay = () => {
+    if (currentIndex + 1 >= allData.length) return;
+    setMessage(null);
+    const next = allData[currentIndex + 1];
+    let nextCash = cash, nextShares = shares, nextAvg = avgCost;
     const remaining = [], newLogs = [];
-    pending.forEach((order) => {
+    pendingOrders.forEach((order) => {
       const filled = order.side === 'buy' ? next.low <= order.price : next.high >= order.price;
       if (filled) {
         if (order.side === 'buy') {
@@ -437,90 +402,61 @@ export default function TradingSimulator() {
           if (cost <= nextCash) {
             const ns = nextShares + order.qty;
             nextAvg = (nextAvg * nextShares + cost) / ns;
-            nextShares = ns; nextCash -= cost;
-            newLogs.push({ date: next.date, idx: idx + 1, action: 'BUY', orderType: '예약(체결)', qty: order.qty, price: order.price });
+            nextShares = ns;
+            nextCash -= cost;
+            newLogs.push({ date: next.date, idx: currentIndex + 1, action: 'BUY', orderType: '예약(체결)', qty: order.qty, price: order.price });
+          } else {
+            remaining.push(order);
           }
         } else {
           if (order.qty <= nextShares) {
-            nextShares -= order.qty; nextCash += order.price * order.qty;
+            nextShares -= order.qty;
+            nextCash += order.price * order.qty;
             if (nextShares === 0) nextAvg = 0;
-            newLogs.push({ date: next.date, idx: idx + 1, action: 'SELL', orderType: '예약(체결)', qty: order.qty, price: order.price });
+            newLogs.push({ date: next.date, idx: currentIndex + 1, action: 'SELL', orderType: '예약(체결)', qty: order.qty, price: order.price });
+          } else {
+            remaining.push(order);
           }
         }
       } else {
         remaining.push(order);
       }
     });
-    return {
-      idx: idx + 1, cash: nextCash, shares: nextShares, avgCost: nextAvg,
-      pendingOrders: remaining, newLogs, prevShares: sh,
-    };
-  };
-
-  const nextDay = () => {
-    const result = computeNextDayState({ idx: currentIndex, cash, shares, avgCost, pendingOrders });
-    if (!result) return;
-    setMessage(null);
-    setCash(result.cash); setAvgCost(result.avgCost);
-    setPendingOrders(result.pendingOrders);
-    if (result.newLogs.length) setTradeLog((prev) => [...prev, ...result.newLogs]);
+    setCash(nextCash);
+    setAvgCost(nextAvg);
+    setPendingOrders(remaining);
+    if (newLogs.length) setTradeLog((prev) => [...prev, ...newLogs]);
     setShares((prevShares) => {
-      trackPositionOnSharesChange(prevShares, result.shares, result.idx);
-      return result.shares;
+      trackPositionOnSharesChange(prevShares, nextShares, currentIndex + 1);
+      return nextShares;
     });
-    setPrice(allData[result.idx].close); // 예약가 입력란을 다음날 종가로 갱신 — 최대매수/매도 수량이 옛 가격에 고정되지 않도록
-    setCurrentIndex(result.idx);
+    setCurrentIndex((i) => i + 1);
   };
 
-  // "N일 진행" — nextDay를 N번 누른 것과 동일한 결과를 한 번에 계산해서 적용 (state batching 문제 없이 정확히 누적)
-  const advanceDays = (n) => {
-    let state = { idx: currentIndex, cash, shares, avgCost, pendingOrders };
-    const allNewLogs = [];
-    let positionEvents = []; // [{prevShares, newShares, idx}] 순서대로 기록해서 보유기간 추적에 그대로 적용
-    let stepsRun = 0;
-
-    for (let i = 0; i < n; i++) {
-      const result = computeNextDayState(state);
-      if (!result) break;
-      positionEvents.push({ prevShares: result.prevShares, newShares: result.shares, idx: result.idx });
-      allNewLogs.push(...result.newLogs);
-      state = { idx: result.idx, cash: result.cash, shares: result.shares, avgCost: result.avgCost, pendingOrders: result.pendingOrders };
-      stepsRun++;
-    }
-
-    if (stepsRun === 0) { setMessage('더 이상 진행할 날짜가 없습니다.'); return; }
-
-    setMessage(null);
-    setCash(state.cash); setAvgCost(state.avgCost);
-    setPendingOrders(state.pendingOrders);
-    if (allNewLogs.length) setTradeLog((prev) => [...prev, ...allNewLogs]);
-    positionEvents.forEach((ev) => trackPositionOnSharesChange(ev.prevShares, ev.newShares, ev.idx));
-    setShares(state.shares);
-    setPrice(allData[state.idx].close);
-    setCurrentIndex(state.idx);
-    if (stepsRun < n) setMessage(`마지막 날짜에 도달해 ${stepsRun}일만 진행했습니다.`);
-  };
-
-  // chartStartSnapshot: 이번에 새로 시작하는 차트의 "수익률 기준점"이 될 평가금액.
-  // - 전체 초기화(resetAll): START_CASH로 리셋
-  // - 차트만 새로고침(refreshChartOnly): 직전 차트에서 청산해 확정된 현재 cash 값을 그대로 넘겨받음
   const applyDataset = (data, name, keepAccount = false, chartStartSnapshot = START_CASH) => {
     const start = randomStart(data.length);
-    setAllData(data); setDataSource(name); setCurrentIndex(start);
+    setAllData(data);
+    setDataSource(name);
+    setCurrentIndex(start);
     if (!keepAccount) {
-      setCash(START_CASH); setShares(0); setAvgCost(0);
-      setToppedUp(0); setGameHeldDays(0); setGameHeldCalendarDays(0);
+      setCash(START_CASH);
+      setShares(0);
+      setAvgCost(0);
+      setToppedUp(0);
+      setGameHeldDays(0);
+      setGameHeldCalendarDays(0);
     }
-    // 차트 단위 상태는 항상 리셋
-    setPendingOrders([]); setTradeLog([]); setPositionOpenIdx(null);
-    setChartHeldDays(0); setChartHeldCalendarDays(0);
+    setPendingOrders([]);
+    setTradeLog([]);
+    setPositionOpenIdx(null);
     setChartStartValue(chartStartSnapshot);
     setChartToppedUp(0);
-    setQty(10); setPrice(data[start].close);
-    setMessage(null); setShowDataPanel(false);
+    setQty(10);
+    setPrice(data[start].close);
+    setMessage(null);
+    setShowDataPanel(false);
   };
 
-  // 파싱 캐시 사용, ZIP은 사용 시점에만 압축 해제 (업로드 시 미리 다 풀지 않아 빠름)
   const getParsedDataset = async (entry) => {
     if (parseCacheRef.current.has(entry.id)) return parseCacheRef.current.get(entry.id);
     const text = entry.kind === 'zip' ? await getZipEntryText(entry.buffer, entry.zipEntry) : entry.raw;
@@ -540,7 +476,6 @@ export default function TradingSimulator() {
     }
   };
 
-  // 계좌(현금/보유주식/수익) 전체 초기화 + 새 데이터로 시작 — 게임을 완전히 새로 시작
   const resetAll = async () => {
     setMessage(null);
     if (!customDatasets.length) { applyDataset(generateData(300), '랜덤 데이터'); return; }
@@ -555,9 +490,6 @@ export default function TradingSimulator() {
     }
   };
 
-  // 계좌(현금/수익)는 유지하되, 차트를 바꾸기 전에 보유 주식을 현재가로 전량 청산해서
-  // "다른 종목의 가격으로 평가됨으로써 수익률이 왜곡되는 문제"를 방지.
-  // 청산 후 확정된 현금 잔액(=새 차트의 시작 평가금액)을 반환해서 applyDataset에 정확히 전달합니다.
   const liquidateHoldings = () => {
     let finalCash = cash;
     if (shares > 0) {
@@ -565,20 +497,21 @@ export default function TradingSimulator() {
       finalCash = cash + proceeds;
       setCash(finalCash);
       setTradeLog((prev) => [...prev, {
-        date: today.date, idx: currentIndex, action: 'SELL',
-        orderType: '차트 전환(전량 청산)', qty: shares, price: today.close,
+        date: today.date,
+        idx: currentIndex,
+        action: 'SELL',
+        orderType: '차트 전환(전량 청산)',
+        qty: shares,
+        price: today.close,
       }]);
       setShares(0);
       setAvgCost(0);
       trackPositionOnSharesChange(shares, 0, currentIndex);
     }
-    setPendingOrders([]); // 예약 주문도 종목이 바뀌므로 모두 취소
+    setPendingOrders([]);
     return finalCash;
   };
 
-  // 계좌(현금/전체 게임 수익)는 그대로 두고 차트(종목·구간)만 새로 불러오기.
-  // → 전환 전 보유 주식을 현재가로 전량 매도해 손익을 확정한 뒤, 그 시점 현금을
-  //   "이번 차트의 수익률 기준점(chartStartValue)"으로 스냅샷하여 0%부터 새로 추적합니다.
   const refreshChartOnly = async () => {
     setMessage(null);
     const snapshot = liquidateHoldings();
@@ -594,9 +527,6 @@ export default function TradingSimulator() {
     }
   };
 
-  // 현금 충전: 시작 금액(START_CASH)만큼 현금을 추가로 더해줌 (자금 소진 후 계속 매수하고 싶을 때)
-  // 충전금은 toppedUp(게임 전체)과 chartToppedUp(이번 차트)에 동시에 누적되어,
-  // 두 수익률 지표 모두에서 "투입원금"으로 정확히 반영됩니다.
   const topUpCash = () => {
     setCash((c) => c + START_CASH);
     setToppedUp((t) => t + START_CASH);
@@ -650,7 +580,6 @@ export default function TradingSimulator() {
     });
   };
 
-  // 학습 데이터 내보내기
   const exportTraining = () => {
     const validTrades = tradeLog.filter((t) => t.action !== 'CANCEL');
     if (!validTrades.length) { setMessage('내보낼 거래 내역이 없습니다. 매수 또는 매도를 먼저 진행해주세요.'); return; }
@@ -680,9 +609,13 @@ export default function TradingSimulator() {
       const a = document.createElement('a');
       a.href = url;
       a.download = `training_${exportRange?.from}_to_${exportRange?.to}_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch { setMessage('다운로드 실패. 텍스트를 직접 복사해주세요.'); }
+    } catch {
+      setMessage('다운로드 실패. 텍스트를 직접 복사해주세요.');
+    }
   };
 
   const copyExportCsv = async () => {
@@ -693,7 +626,8 @@ export default function TradingSimulator() {
       if (ta) { ta.focus(); ta.select(); if (document.execCommand('copy')) { setMessage('클립보드에 복사했습니다.'); return; } }
     } catch {}
     setMessage('자동 복사 실패. 텍스트 영역 클릭 후 Ctrl+C로 복사해주세요.');
-    exportTextareaRef.current?.focus(); exportTextareaRef.current?.select();
+    exportTextareaRef.current?.focus();
+    exportTextareaRef.current?.select();
   };
 
   const visibleTrades = useMemo(
@@ -704,8 +638,6 @@ export default function TradingSimulator() {
   return (
     <div className="min-h-screen bg-[#0d1320] text-slate-200 font-sans p-4 md:p-6">
       <div className="max-w-6xl mx-auto">
-
-        {/* 헤더 */}
         <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
           <div>
             <h1 className="text-lg md:text-xl font-bold tracking-tight text-slate-100">매매 연습 시뮬레이터</h1>
@@ -730,15 +662,12 @@ export default function TradingSimulator() {
             </button>
           </div>
         </div>
-
-        {/* 데이터 입력 패널 */}
         {showDataPanel && (
           <div className="bg-[#131b2c] rounded-lg border border-[#1f2b3e] p-3 mb-4 space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-xs font-semibold text-slate-400">데이터 불러오기</h2>
               <span className="text-[10px] text-slate-500">현재: {dataSource} ({allData.length}일)</span>
             </div>
-
             <div className="border border-dashed border-[#2c3a4f] rounded-lg p-4 text-center">
               <label className="inline-flex items-center gap-2 text-sm px-4 py-2 rounded bg-emerald-600/20 border border-emerald-700 text-emerald-400 hover:bg-emerald-600/30 transition-colors cursor-pointer">
                 <Upload size={14} /> .csv / .txt / .zip 파일 업로드 (여러 개 가능)
@@ -749,7 +678,6 @@ export default function TradingSimulator() {
                 형식: 날짜,시가,고가,저가,종가,MA5,MA20,MA60,MA120,거래량 (탭/쉼표/공백 구분, 헤더 있어도 됨, 날짜 최신순/과거순 모두 자동 인식, 이동평균 빈 칸 허용)
               </p>
             </div>
-
             {customDatasets.length > 0 && (
               <div>
                 <p className="text-[11px] text-slate-500 mb-1">등록된 데이터 ({customDatasets.length}개) — 초기화 시 이 목록 중 무작위 선택</p>
@@ -766,7 +694,6 @@ export default function TradingSimulator() {
                 </div>
               </div>
             )}
-
             <details className="text-xs">
               <summary className="cursor-pointer text-slate-400 hover:text-slate-200">직접 텍스트로 붙여넣기</summary>
               <div className="mt-2 space-y-2">
@@ -780,18 +707,14 @@ export default function TradingSimulator() {
                 </button>
               </div>
             </details>
-
             <button onClick={() => { applyDataset(generateData(300), '랜덤 데이터'); }} className="text-xs px-3 py-1.5 rounded border border-[#2c3a4f] text-slate-400 hover:text-slate-200 hover:border-slate-500 transition-colors">
               랜덤 데이터로 시작
             </button>
           </div>
         )}
-
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-4">
-          {/* 좌측: 차트 + 주문 */}
           <div className="space-y-2">
             <div className="bg-[#131b2c] rounded-lg border border-[#1f2b3e] p-3">
-              {/* 줌 컨트롤 */}
               <div className="flex items-center justify-between mb-2 flex-wrap gap-1">
                 <span className="text-[11px] text-slate-500 font-mono">표시: {Math.min(zoomDays, visible.length)}일</span>
                 <div className="flex items-center gap-1 flex-wrap">
@@ -809,8 +732,6 @@ export default function TradingSimulator() {
                   </button>
                 </div>
               </div>
-
-              {/* 캔들 차트 */}
               <ResponsiveContainer width="100%" height={320}>
                 <ComposedChart data={chartData} margin={{ top: 5, right: 70, left: 0, bottom: 0 }}>
                   <CartesianGrid stroke="#1f2b3e" strokeDasharray="3 3" />
@@ -852,15 +773,11 @@ export default function TradingSimulator() {
                   })}
                 </ComposedChart>
               </ResponsiveContainer>
-
-              {/* 범례 */}
               <div className="flex gap-4 text-[10px] text-slate-500 px-2 mt-1 flex-wrap">
                 {[['bg-amber-400','MA5'],['bg-violet-400','MA20'],['bg-emerald-400','MA60'],['bg-pink-400','MA120'],['bg-red-500','매수'],['bg-blue-500','매도']].map(([cls, label]) => (
                   <span key={label} className="flex items-center gap-1"><span className={`w-2 h-2 ${cls} inline-block rounded-full`}></span>{label}</span>
                 ))}
               </div>
-
-              {/* 시장가 매수/매도/다음날 — 즉시 체결, 토글 없이 바로 누름 */}
               <div className="grid grid-cols-3 gap-2 mt-3">
                 <button onClick={() => placeMarketOrder('buy')} className="flex items-center justify-center gap-1 bg-red-600/20 border border-red-700 text-red-400 rounded py-2.5 text-sm font-semibold hover:bg-red-600/30 transition-colors">
                   <TrendingUp size={14} /> 시장가 매수
@@ -873,18 +790,7 @@ export default function TradingSimulator() {
                   다음날 <ChevronRight size={16} />
                 </button>
               </div>
-              <div className="grid grid-cols-4 gap-2 mt-2">
-                {[5, 10, 20, 50].map((n) => (
-                  <button key={n} onClick={() => advanceDays(n)} disabled={currentIndex + 1 >= allData.length}
-                    title={`다음날 버튼을 ${n}번 누른 것과 동일하게 동작합니다 (그 사이 예약 주문은 매일 체결 조건을 확인합니다)`}
-                    className="flex items-center justify-center gap-1 bg-[#0d1320] border border-[#2c3a4f] text-slate-400 rounded py-2 text-xs font-semibold hover:text-slate-200 hover:border-slate-500 transition-colors disabled:opacity-40">
-                    <ChevronRight size={13} /><ChevronRight size={13} /> {n}일 진행
-                  </button>
-                ))}
-              </div>
               <p className="text-[10px] text-slate-500 mt-1">"시장가 매도"는 아래 입력된 수량만큼 즉시 당일 종가로 매도합니다. 보유 수량 전체를 팔고 싶으면 "최대 매도" 버튼으로 수량을 채운 뒤 누르세요.</p>
-
-              {/* 예약(단일) 매수/매도 + 그리드 예약 */}
               <div className="grid grid-cols-3 gap-2 mt-3">
                 <button onClick={() => placeLimitOrder('buy')} className="flex items-center justify-center gap-1 bg-red-600/10 border border-red-800 text-red-300 rounded py-2 text-xs font-semibold hover:bg-red-600/20 transition-colors">
                   예약 매수
@@ -897,8 +803,6 @@ export default function TradingSimulator() {
                   📶 그리드 예약
                 </button>
               </div>
-
-              {/* 매수 예약 전체취소 / 매도 예약 전체취소 — 예약 매수·매도 버튼 바로 아래 */}
               <div className="grid grid-cols-2 gap-2 mt-2">
                 <button
                   onClick={() => cancelAllOrders('buy')}
@@ -913,8 +817,6 @@ export default function TradingSimulator() {
                   매도예약 취소 ({pendingOrders.filter((o) => o.side === 'sell').length}건)
                 </button>
               </div>
-
-              {/* 그리드(계단식) 예약 주문 패널 */}
               {showGridPanel && (
                 <div className="mt-2 p-3 rounded-lg border border-amber-800/50 bg-amber-500/5 space-y-2">
                   <div className="flex items-center justify-between">
@@ -957,15 +859,11 @@ export default function TradingSimulator() {
                   </button>
                 </div>
               )}
-
-              {/* 수량 입력 */}
               <div className="mt-2">
                 <label className="text-[11px] text-slate-500">수량 (시장가·단일 예약 주문에 공통 사용)</label>
                 <input type="number" value={qty} onChange={(e) => setQty(e.target.value)}
                   className="w-full mt-1 bg-[#0d1320] border border-[#2c3a4f] rounded px-2 py-1.5 text-sm font-mono outline-none focus:border-slate-500" />
               </div>
-
-              {/* 최대/비율 버튼 */}
               <div className="grid grid-cols-2 gap-2 mt-2">
                 <button onClick={() => setQty(String(maxBuyQty))} className="text-xs py-1.5 rounded border border-red-700/60 text-red-400 hover:bg-red-600/10 transition-colors">
                   최대 매수 ({maxBuyQty.toLocaleString()}주)
@@ -978,7 +876,6 @@ export default function TradingSimulator() {
                 {[5,10,20,50,75].map((pct) => (
                   <button key={pct}
                     onClick={() => {
-                      // 현재 입력된 수량의 N% (더하는 게 아니라 그 값 자체로 교체. 다시 누르면 그 결과의 N%로 다시 계산됨)
                       setQty((prev) => {
                         const cur = Math.max(0, Math.floor(Number(prev) || 0));
                         const next = Math.max(1, Math.floor(cur * pct / 100));
@@ -991,30 +888,19 @@ export default function TradingSimulator() {
                 ))}
               </div>
               <p className="text-[10px] text-slate-500 mt-1">% 버튼: 현재 입력된 수량의 N%로 바꿉니다. 예: 100주에서 10% → 10주, 다시 10% → 1주.</p>
-
-              {/* 예약 가격 입력 (예약 매수/매도 버튼에서 공통 사용) */}
               <div className="mt-2">
-                <div className="flex items-center justify-between">
-                  <label className="text-[11px] text-slate-500">예약 가격 (예약 매수/매도 공통)</label>
-                  <button onClick={() => setPrice(today.close)} className="text-[10px] px-2 py-0.5 rounded border border-[#2c3a4f] text-slate-400 hover:text-slate-200 hover:border-slate-500 transition-colors">
-                    현재가로 맞추기
-                  </button>
-                </div>
+                <label className="text-[11px] text-slate-500">예약 가격 (예약 매수/매도 공통)</label>
                 <input type="number" value={price} onChange={(e) => setPrice(e.target.value)}
                   className="w-full mt-1 bg-[#0d1320] border border-[#2c3a4f] rounded px-2 py-1.5 text-sm font-mono outline-none focus:border-slate-500" />
-                <p className="text-[10px] text-slate-500 mt-1">매수: 저가가 이 가격 이하로 떨어지면 체결 / 매도: 고가가 이 가격 이상으로 오르면 체결. "다음날"·"5일 진행"을 누르면 이 값은 자동으로 그날 종가로 갱신됩니다.</p>
+                <p className="text-[10px] text-slate-500 mt-1">매수: 저가가 이 가격 이하로 떨어지면 체결 / 매도: 고가가 이 가격 이상으로 오르면 체결</p>
               </div>
               <div className="text-[11px] text-slate-500 mt-2">시장가 체결 가격: <span className="text-slate-300 font-mono">{fmt(today.close)}원 (당일 종가)</span></div>
-
-              {/* 메시지: 항상 같은 자리(패널 맨 아래)에 고정 표시되어, 떴다 사라져도 위쪽 버튼 위치가 흔들리지 않음 */}
               <div className="mt-3 min-h-[2.25rem]">
                 {message && (
                   <div className="text-xs text-amber-400 bg-amber-500/10 border border-amber-700/50 rounded px-3 py-2">{message}</div>
                 )}
               </div>
             </div>
-
-            {/* 거래량 차트 */}
             <div className="bg-[#131b2c] rounded-lg border border-[#1f2b3e] p-3">
               <ResponsiveContainer width="100%" height={90}>
                 <BarChart data={chartData} margin={{ top: 0, right: 10, left: 0, bottom: 0 }}>
@@ -1025,8 +911,6 @@ export default function TradingSimulator() {
                 </BarChart>
               </ResponsiveContainer>
             </div>
-
-            {/* 거래 내역 */}
             <div className="bg-[#131b2c] rounded-lg border border-[#1f2b3e] p-3">
               <h2 className="text-xs font-semibold text-slate-400 mb-2">거래 내역</h2>
               <div className="max-h-40 overflow-y-auto">
@@ -1058,15 +942,11 @@ export default function TradingSimulator() {
               </div>
             </div>
           </div>
-
-          {/* 우측: 계좌 정보 + 예약 주문 */}
           <div className="space-y-3">
             <div className="bg-[#131b2c] rounded-lg border border-[#1f2b3e] p-3 space-y-1.5 text-sm font-mono">
               {[['현금', fmt(cash) + '원'],['보유 수량', shares.toLocaleString() + '주'],['평단가', shares > 0 ? fmt(avgCost) + '원' : '-'],['현재가', fmt(today.close) + '원']].map(([label, val]) => (
                 <div key={label} className="flex justify-between"><span className="text-slate-500">{label}</span><span>{val}</span></div>
               ))}
-
-              {/* ① 보유 포지션 - 지금 들고 있는 주식의 매수금액과 실시간 수익률 (매도 전 참고용) */}
               {shares > 0 && (
                 <>
                   <div className="h-px bg-[#1f2b3e] my-1"></div>
@@ -1080,33 +960,27 @@ export default function TradingSimulator() {
                   </div>
                 </>
               )}
-
               <div className="h-px bg-[#1f2b3e] my-1"></div>
               <div className="flex justify-between font-semibold"><span className="text-slate-400">평가금액</span><span>{fmt(portfolioValue)}원</span></div>
-
-              {/* ② 이번 차트 누적 수익 - 지금 보고 있는 차트로 전환된 시점부터 */}
               <div className="flex justify-between">
                 <span className="text-slate-500" title="이번 차트로 전환된 시점부터 지금까지의 손익 (차트 새로고침 시 0%부터 다시 시작)">이번 차트 손익</span>
                 <span className={chartPnl >= 0 ? 'text-red-400' : 'text-blue-400'}>{chartPnl >= 0 ? '+' : ''}{fmt(chartPnl)}원 ({chartReturnPct >= 0 ? '+' : ''}{chartReturnPct.toFixed(2)}%)</span>
               </div>
               <div className="flex justify-between text-[11px]">
-                <span className="text-slate-600" title="단순 경과일이 아니라, 이번 차트에서 매수해 전량 매도할 때까지의 실제 보유 기간 (거래일 / 달력일 / 연수=달력일÷365). 예약 매수는 실제로 체결된 날부터 카운트됩니다 — 주문을 등록만 한 상태에서는 0일로 표시됩니다.">└ 이번 차트 보유 기간</span>
+                <span className="text-slate-600" title="단순 경과일이 아니라, 이번 차트에서 매수해 전량 매도할 때까지의 실제 보유 기간 (거래일 / 달력일). 예약 매수는 실제로 체결된 날부터 카운트됩니다 — 주문을 등록만 한 상태에서는 0일로 표시됩니다.">└ 이번 차트 보유 기간</span>
                 <span className="text-slate-500">
-                  {currentChartHeldDays}거래일 · {currentChartHeldCalendarDays}일 · {currentChartHeldYears.toFixed(2)}년{positionOpenIdx !== null ? ' (진행 중)' : ''}
+                  {currentChartHeldDays}거래일 · {currentChartHeldCalendarDays}일{positionOpenIdx !== null ? ' (진행 중)' : ''}
                   {positionOpenIdx === null && pendingOrders.some((o) => o.side === 'buy') ? ' (매수 예약 대기 중)' : ''}
                 </span>
               </div>
-
-              {/* ③ 전체 게임 누적 수익 - 초기화 이후 모든 차트를 거치며 쌓인 손익 */}
               <div className="flex justify-between">
                 <span className="text-slate-500" title="게임을 초기화한 시점부터 지금까지, 여러 차트를 거치며 쌓인 전체 누적 손익">전체 게임 손익</span>
                 <span className={gamePnl >= 0 ? 'text-red-400' : 'text-blue-400'}>{gamePnl >= 0 ? '+' : ''}{fmt(gamePnl)}원 ({returnPct >= 0 ? '+' : ''}{returnPct.toFixed(2)}%)</span>
               </div>
               <div className="flex justify-between text-[11px]">
-                <span className="text-slate-600" title="게임 시작 후 여러 차트를 거치며 실제로 주식을 보유하고 있던 기간의 총합 — 거래일(영업일) / 달력일(주말 포함 실제 경과일) / 연수(달력일÷365). 목표 수익 달성에 걸린 시간 역산용">└ 전체 보유 기간 합계</span>
-                <span className="text-slate-500">{gameTotalHeldDays}거래일 · {gameTotalHeldCalendarDays}일 · {gameTotalHeldYears.toFixed(2)}년</span>
+                <span className="text-slate-600" title="게임 시작 후 여러 차트를 거치며 실제로 주식을 보유하고 있던 기간의 총합 — 거래일(영업일) 기준과 달력일(주말 포함 실제 경과일) 기준 둘 다. 목표 수익 달성에 걸린 시간 역산용">└ 전체 보유 기간 합계</span>
+                <span className="text-slate-500">{gameTotalHeldDays}거래일 · {gameTotalHeldCalendarDays}일</span>
               </div>
-
               {toppedUp > 0 && (
                 <div className="flex justify-between text-[11px]">
                   <span className="text-slate-600">충전 누적 (게임 전체)</span>
@@ -1114,7 +988,6 @@ export default function TradingSimulator() {
                 </div>
               )}
             </div>
-
             <div className="bg-[#131b2c] rounded-lg border border-[#1f2b3e] p-3">
               <h2 className="text-xs font-semibold text-slate-400 mb-2 flex items-center gap-1"><Clock size={12} /> 예약 주문</h2>
               {pendingOrders.length === 0 ? (
@@ -1135,11 +1008,9 @@ export default function TradingSimulator() {
           </div>
         </div>
       </div>
-
-      {/* 학습 데이터 내보내기 모달 */}
       {exportCsv && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50 overflow-y-auto" onClick={() => setExportCsv(null)}>
-          <div className="bg-[#131b2c] border border-[#2c3a4f] rounded-lg w-full max-w-2xl max-h-[90vh] flex flex-col my-auto" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-[#131b2c] border border-[#1f2b3e] rounded-lg w-full max-w-2xl max-h-[90vh] flex flex-col my-auto" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-4 py-3 border-b border-[#1f2b3e]">
               <div>
                 <h2 className="text-sm font-semibold text-slate-200">학습 데이터 내보내기</h2>
