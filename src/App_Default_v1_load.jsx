@@ -250,7 +250,6 @@ export default function TradingSimulator() {
   const [chartHeldCalendarDays, setChartHeldCalendarDays] = useState(0); // 위와 동일하되 달력일 기준
   const [qty, setQty] = useState(10);
   const [price, setPrice] = useState(0);
-  const [advanceStep, setAdvanceStep] = useState(1);
   const [showGridPanel, setShowGridPanel] = useState(false);
   const [gridSide, setGridSide] = useState('buy'); // 'buy' | 'sell'
   const [gridBasePrice, setGridBasePrice] = useState(0);
@@ -609,7 +608,18 @@ export default function TradingSimulator() {
   };
 
   const nextDay = () => {
-    advanceDays(advanceStep);
+    const result = computeNextDayState({ idx: currentIndex, cash, shares, avgCost, pendingOrders });
+    if (!result) return;
+    setMessage(null);
+    setCash(result.cash); setAvgCost(result.avgCost);
+    setPendingOrders(result.pendingOrders);
+    if (result.newLogs.length) setTradeLog((prev) => [...prev, ...result.newLogs]);
+    setShares((prevShares) => {
+      trackPositionOnSharesChange(prevShares, result.shares, result.idx);
+      return result.shares;
+    });
+    setPrice(allData[result.idx].close); // 예약가 입력란을 다음날 종가로 갱신 — 최대매수/매도 수량이 옛 가격에 고정되지 않도록
+    setCurrentIndex(result.idx);
   };
 
   // "N일 진행" — nextDay를 N번 누른 것과 동일한 결과를 한 번에 계산해서 적용 (state batching 문제 없이 정확히 누적)
@@ -1002,7 +1012,7 @@ export default function TradingSimulator() {
               </div>
 
               {/* 캔들 차트 */}
-              <ResponsiveContainer width="100%" height={220}>
+              <ResponsiveContainer width="100%" height={320}>
                 <ComposedChart data={chartData} margin={{ top: 5, right: 70, left: 0, bottom: 0 }}>
                   <CartesianGrid stroke="#1f2b3e" strokeDasharray="3 3" />
                   <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#64748b' }} tickFormatter={(d) => d.slice(5)} minTickGap={20} />
@@ -1052,73 +1062,28 @@ export default function TradingSimulator() {
               </div>
 
               {/* 시장가 매수/매도/다음날 — 즉시 체결, 토글 없이 바로 누름 */}
-              <div className="flex flex-wrap items-center gap-2 mt-3">
-                <button onClick={() => placeMarketOrder('buy')} className="flex-1 min-w-[120px] flex items-center justify-center gap-1 bg-red-600/20 border border-red-700 text-red-400 rounded py-2.5 text-sm font-semibold hover:bg-red-600/30 transition-colors">
+              <div className="grid grid-cols-3 gap-2 mt-3">
+                <button onClick={() => placeMarketOrder('buy')} className="flex items-center justify-center gap-1 bg-red-600/20 border border-red-700 text-red-400 rounded py-2.5 text-sm font-semibold hover:bg-red-600/30 transition-colors">
                   <TrendingUp size={14} /> 시장가 매수
                 </button>
-                <button onClick={() => placeMarketOrder('sell')} className="flex-1 min-w-[120px] flex items-center justify-center gap-1 bg-blue-600/20 border border-blue-700 text-blue-400 rounded py-2.5 text-sm font-semibold hover:bg-blue-600/30 transition-colors">
+                <button onClick={() => placeMarketOrder('sell')} className="flex items-center justify-center gap-1 bg-blue-600/20 border border-blue-700 text-blue-400 rounded py-2.5 text-sm font-semibold hover:bg-blue-600/30 transition-colors">
                   <TrendingDown size={14} /> 시장가 매도
                 </button>
-                <div className="flex items-center rounded border border-[#2c3a4f] overflow-hidden bg-[#0d1320]">
-                  <button onClick={nextDay} disabled={currentIndex + 1 >= allData.length}
-                    className="flex items-center justify-center gap-1 bg-emerald-600/20 border-r border-emerald-700/40 text-emerald-400 px-3 py-2.5 text-sm font-semibold hover:bg-emerald-600/30 transition-colors disabled:opacity-40">
-                    다음날 <ChevronRight size={16} />
+                <button onClick={nextDay} disabled={currentIndex + 1 >= allData.length}
+                  className="flex items-center justify-center gap-1 bg-emerald-600/20 border border-emerald-700 text-emerald-400 rounded py-2.5 text-sm font-semibold hover:bg-emerald-600/30 transition-colors disabled:opacity-40">
+                  다음날 <ChevronRight size={16} />
+                </button>
+              </div>
+              <div className="grid grid-cols-4 gap-2 mt-2">
+                {[5, 10, 20, 50].map((n) => (
+                  <button key={n} onClick={() => advanceDays(n)} disabled={currentIndex + 1 >= allData.length}
+                    title={`다음날 버튼을 ${n}번 누른 것과 동일하게 동작합니다 (그 사이 예약 주문은 매일 체결 조건을 확인합니다)`}
+                    className="flex items-center justify-center gap-1 bg-[#0d1320] border border-[#2c3a4f] text-slate-400 rounded py-2 text-xs font-semibold hover:text-slate-200 hover:border-slate-500 transition-colors disabled:opacity-40">
+                    <ChevronRight size={13} /><ChevronRight size={13} /> {n}일 진행
                   </button>
-                  <div className="flex">
-                    {[1, 5, 10, 20, 50].map((n) => (
-                      <button key={n} onClick={() => setAdvanceStep(n)}
-                        className={`px-2.5 py-2 text-[11px] font-semibold border-r last:border-r-0 ${advanceStep === n ? 'bg-emerald-600/20 text-emerald-300' : 'text-slate-400 hover:text-slate-200 hover:bg-[#162033]'}`}>
-                        {n}일
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                ))}
               </div>
               <p className="text-[10px] text-slate-500 mt-1">"시장가 매도"는 아래 입력된 수량만큼 즉시 당일 종가로 매도합니다. 보유 수량 전체를 팔고 싶으면 "최대 매도" 버튼으로 수량을 채운 뒤 누르세요.</p>
-
-              <div className="mt-2 p-2.5 rounded-lg border border-[#1f2b3e] bg-[#0d1320]/60 space-y-2">
-                <label className="text-[11px] text-slate-500">수량 (시장가·단일 예약 주문에 공통 사용)</label>
-                <input type="number" value={qty} onChange={(e) => setQty(e.target.value)}
-                  className="w-full mt-1 bg-[#0d1320] border border-[#2c3a4f] rounded px-2 py-1.5 text-sm font-mono outline-none focus:border-slate-500" />
-
-                <div className="grid grid-cols-2 gap-2">
-                  <button onClick={() => setQty(String(maxBuyQty))} className="text-xs py-1.5 rounded border border-red-700/60 text-red-400 hover:bg-red-600/10 transition-colors">
-                    최대 매수 ({maxBuyQty.toLocaleString()}주)
-                  </button>
-                  <button onClick={() => setQty(String(maxSellQty))} className="text-xs py-1.5 rounded border border-blue-700/60 text-blue-400 hover:bg-blue-600/10 transition-colors">
-                    최대 매도 ({maxSellQty.toLocaleString()}주)
-                  </button>
-                </div>
-                <div className="grid grid-cols-5 gap-1.5">
-                  {[5,10,20,50,75].map((pct) => (
-                    <button key={pct}
-                      onClick={() => {
-                        setQty((prev) => {
-                          const cur = Math.max(0, Math.floor(Number(prev) || 0));
-                          const next = Math.max(1, Math.floor(cur * pct / 100));
-                          return String(next);
-                        });
-                      }}
-                      className="text-xs py-1.5 rounded border border-[#2c3a4f] text-slate-400 hover:text-slate-200 hover:border-slate-500 transition-colors">
-                      {pct}%
-                    </button>
-                  ))}
-                </div>
-                <p className="text-[10px] text-slate-500">% 버튼: 현재 입력된 수량의 N%로 바꿉니다. 예: 100주에서 10% → 10주, 다시 10% → 1주.</p>
-
-                <div className="mt-2">
-                  <div className="flex items-center justify-between">
-                    <label className="text-[11px] text-slate-500">예약 가격 (예약 매수/매도 공통)</label>
-                    <button onClick={() => setPrice(today.close)} className="text-[10px] px-2 py-0.5 rounded border border-[#2c3a4f] text-slate-400 hover:text-slate-200 hover:border-slate-500 transition-colors">
-                      현재가로 맞추기
-                    </button>
-                  </div>
-                  <input type="number" value={price} onChange={(e) => setPrice(e.target.value)}
-                    className="w-full mt-1 bg-[#0d1320] border border-[#2c3a4f] rounded px-2 py-1.5 text-sm font-mono outline-none focus:border-slate-500" />
-                  <p className="text-[10px] text-slate-500 mt-1">매수: 저가가 이 가격 이하로 떨어지면 체결 / 매도: 고가가 이 가격 이상으로 오르면 체결. "다음날"·선택한 간격으로 진행하면 이 값은 자동으로 그날 종가로 갱신됩니다.</p>
-                </div>
-                <div className="text-[11px] text-slate-500">시장가 체결 가격: <span className="text-slate-300 font-mono">{fmt(today.close)}원 (당일 종가)</span></div>
-              </div>
 
               {/* 예약(단일) 매수/매도 + 그리드 예약 */}
               <div className="grid grid-cols-3 gap-2 mt-3">
@@ -1193,6 +1158,54 @@ export default function TradingSimulator() {
                   </button>
                 </div>
               )}
+
+              {/* 수량 입력 */}
+              <div className="mt-2">
+                <label className="text-[11px] text-slate-500">수량 (시장가·단일 예약 주문에 공통 사용)</label>
+                <input type="number" value={qty} onChange={(e) => setQty(e.target.value)}
+                  className="w-full mt-1 bg-[#0d1320] border border-[#2c3a4f] rounded px-2 py-1.5 text-sm font-mono outline-none focus:border-slate-500" />
+              </div>
+
+              {/* 최대/비율 버튼 */}
+              <div className="grid grid-cols-2 gap-2 mt-2">
+                <button onClick={() => setQty(String(maxBuyQty))} className="text-xs py-1.5 rounded border border-red-700/60 text-red-400 hover:bg-red-600/10 transition-colors">
+                  최대 매수 ({maxBuyQty.toLocaleString()}주)
+                </button>
+                <button onClick={() => setQty(String(maxSellQty))} className="text-xs py-1.5 rounded border border-blue-700/60 text-blue-400 hover:bg-blue-600/10 transition-colors">
+                  최대 매도 ({maxSellQty.toLocaleString()}주)
+                </button>
+              </div>
+              <div className="grid grid-cols-5 gap-1.5 mt-2">
+                {[5,10,20,50,75].map((pct) => (
+                  <button key={pct}
+                    onClick={() => {
+                      // 현재 입력된 수량의 N% (더하는 게 아니라 그 값 자체로 교체. 다시 누르면 그 결과의 N%로 다시 계산됨)
+                      setQty((prev) => {
+                        const cur = Math.max(0, Math.floor(Number(prev) || 0));
+                        const next = Math.max(1, Math.floor(cur * pct / 100));
+                        return String(next);
+                      });
+                    }}
+                    className="text-xs py-1.5 rounded border border-[#2c3a4f] text-slate-400 hover:text-slate-200 hover:border-slate-500 transition-colors">
+                    {pct}%
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10px] text-slate-500 mt-1">% 버튼: 현재 입력된 수량의 N%로 바꿉니다. 예: 100주에서 10% → 10주, 다시 10% → 1주.</p>
+
+              {/* 예약 가격 입력 (예약 매수/매도 버튼에서 공통 사용) */}
+              <div className="mt-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-[11px] text-slate-500">예약 가격 (예약 매수/매도 공통)</label>
+                  <button onClick={() => setPrice(today.close)} className="text-[10px] px-2 py-0.5 rounded border border-[#2c3a4f] text-slate-400 hover:text-slate-200 hover:border-slate-500 transition-colors">
+                    현재가로 맞추기
+                  </button>
+                </div>
+                <input type="number" value={price} onChange={(e) => setPrice(e.target.value)}
+                  className="w-full mt-1 bg-[#0d1320] border border-[#2c3a4f] rounded px-2 py-1.5 text-sm font-mono outline-none focus:border-slate-500" />
+                <p className="text-[10px] text-slate-500 mt-1">매수: 저가가 이 가격 이하로 떨어지면 체결 / 매도: 고가가 이 가격 이상으로 오르면 체결. "다음날"·"5일 진행"을 누르면 이 값은 자동으로 그날 종가로 갱신됩니다.</p>
+              </div>
+              <div className="text-[11px] text-slate-500 mt-2">시장가 체결 가격: <span className="text-slate-300 font-mono">{fmt(today.close)}원 (당일 종가)</span></div>
 
               {/* 메시지: 항상 같은 자리(패널 맨 아래)에 고정 표시되어, 떴다 사라져도 위쪽 버튼 위치가 흔들리지 않음 */}
               <div className="mt-3 min-h-[2.25rem]">
