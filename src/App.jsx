@@ -2,9 +2,32 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 
 // ---------- 기본 데이터: GitHub Pages에서 자동 로드 ----------
 // /docs 폴더에 올려둔 ZIP을 앱 시작 시 자동으로 fetch해서 파싱합니다.
-// 한 번 받은 데이터는 Artifact 저장소에 캐시되어 다음 실행 시 즉시 로드됩니다.
+// 한 번 받은 데이터는 브라우저 저장소에 캐시되어 다음 실행 시 즉시 로드됩니다.
 const AUTO_LOAD_ZIP_URL = 'https://dsshin2420.github.io/trading-simulator/KOSDAQ_Kospi_50.zip';
 const CACHE_KEY = 'trading_sim_github_zip_v1';
+
+const getStorageApi = () => {
+  if (typeof window === 'undefined') return null;
+  if (window.storage && typeof window.storage.get === 'function' && typeof window.storage.set === 'function') {
+    return window.storage;
+  }
+  if (typeof localStorage !== 'undefined') {
+    return {
+      get: async (key) => {
+        const value = localStorage.getItem(key);
+        return value === null ? null : { value };
+      },
+      set: async (key, value) => {
+        localStorage.setItem(key, value);
+      },
+      delete: async (key) => {
+        localStorage.removeItem(key);
+      },
+    };
+  }
+  return null;
+};
+
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, BarChart, ReferenceDot, ReferenceLine
@@ -240,22 +263,24 @@ export default function TradingSimulator() {
   const parseCacheRef = useRef(new Map());
   const exportTextareaRef = useRef(null);
 
-  // ── 시작 시: GitHub Pages ZIP 자동 로드 ──
-  // 캐시가 있으면 즉시 사용, 없으면 fetch → 파싱 → 캐시 저장
+  // ── 시작 시: ZIP 자동 로드 ──
+  // 캐시가 있으면 즉시 사용, 없으면 원격/로컬 ZIP을 순차적으로 시도한 뒤 파싱합니다.
   useEffect(() => {
     (async () => {
+      const storage = getStorageApi();
+
       // 1. 캐시 확인
       try {
-        const cached = await window.storage.get(CACHE_KEY);
+        const cached = storage ? await storage.get(CACHE_KEY) : null;
         if (cached) {
           const payload = JSON.parse(cached.value);
           const datasets = payload.map((d, i) => ({
             id: `gh:${i}:${d.name}`, name: d.name, kind: 'saved',
             data: d.rows.map((r, idx) => ({
               idx, date: r[0], open: r[1], high: r[2], low: r[3], close: r[4],
-              ma5: r[5]??undefined, ma20: r[6]??undefined,
-              ma60: r[7]??undefined, ma120: r[8]??undefined,
-              volume: r[9]??0, range: [r[3], r[2]],
+              ma5: r[5] ?? undefined, ma20: r[6] ?? undefined,
+              ma60: r[7] ?? undefined, ma120: r[8] ?? undefined,
+              volume: r[9] ?? 0, range: [r[3], r[2]],
             })),
           }));
           setGithubDatasets(datasets);
@@ -266,58 +291,88 @@ export default function TradingSimulator() {
           setIsLoading(false);
           return;
         }
-      } catch {}
+      } catch (err) {
+        console.warn('캐시 복원 실패:', err);
+      }
 
-      // 2. GitHub Pages에서 ZIP fetch
+      // 2. ZIP fetch (원격 → 현재 경로 → 루트 경로 순서)
       try {
-        setLoadStatus('GitHub에서 ZIP 다운로드 중...');
-        const res = await fetch(AUTO_LOAD_ZIP_URL, { signal: AbortSignal.timeout(30000) });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const buffer = await res.arrayBuffer();
-
-        // ZIP 헤더 검증
-        const magic = new Uint8Array(buffer.slice(0, 4));
-        if (!(magic[0]===0x50&&magic[1]===0x4B&&magic[2]===0x03&&magic[3]===0x04))
-          throw new Error('유효한 ZIP 파일이 아닙니다');
-
-        setLoadStatus('CSV 파싱 중...');
-        const zipEntries = listZipEntries(buffer);
-        const csvList = zipEntries.filter(en =>
-          /\.(csv|txt)$/i.test(en.name) && en.uncompSize > 0 &&
-          !en.name.includes('__MACOSX') && !en.name.split('/').pop().startsWith('.')
-        );
-
-        const datasets = [];
-        for (const en of csvList) {
-          try {
-            const text = await getZipEntryText(buffer, en);
-            const parsed = parseCustomData(text);
-            if (parsed && parsed.length >= 2) {
-              datasets.push({ id: `gh:${datasets.length}:${en.name}`, name: en.name, kind: 'saved', data: parsed });
-            }
-          } catch {}
+        const candidateUrls = [AUTO_LOAD_ZIP_URL];
+        if (typeof window !== 'undefined') {
+          candidateUrls.push(new URL('./KOSDAQ_Kospi_50.zip', window.location.href).toString());
+          candidateUrls.push('/KOSDAQ_Kospi_50.zip');
         }
 
-        if (!datasets.length) throw new Error('CSV 파일을 찾지 못했습니다');
+        let lastError = null;
+        let loadedDatasets = null;
+
+        for (const zipUrl of [...new Set(candidateUrls)]) {
+          try {
+            setLoadStatus(`ZIP 다운로드 중... (${zipUrl})`);
+            const res = await fetch(zipUrl, { signal: AbortSignal.timeout(30000), cache: 'no-store' });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const buffer = await res.arrayBuffer();
+
+            // ZIP 헤더 검증
+            const magic = new Uint8Array(buffer.slice(0, 4));
+            if (!(magic[0] === 0x50 && magic[1] === 0x4B && magic[2] === 0x03 && magic[3] === 0x04)) {
+              throw new Error('유효한 ZIP 파일이 아닙니다');
+            }
+
+            setLoadStatus('CSV 파싱 중...');
+            const zipEntries = listZipEntries(buffer);
+            const csvList = zipEntries.filter((en) =>
+              /\.(csv|txt)$/i.test(en.name) && en.uncompSize > 0 &&
+              !en.name.includes('__MACOSX') && !en.name.split('/').pop().startsWith('.')
+            );
+
+            const datasets = [];
+            for (const en of csvList) {
+              try {
+                const text = await getZipEntryText(buffer, en);
+                const parsed = parseCustomData(text);
+                if (parsed && parsed.length >= 2) {
+                  datasets.push({ id: `gh:${datasets.length}:${en.name}`, name: en.name, kind: 'saved', data: parsed });
+                }
+              } catch (err) {
+                console.warn(`ZIP 엔트리 파싱 실패 (${en.name}):`, err);
+              }
+            }
+
+            if (!datasets.length) throw new Error('CSV 파일을 찾지 못했습니다');
+
+            loadedDatasets = datasets;
+            break;
+          } catch (err) {
+            lastError = err;
+            console.warn(`ZIP 로드 실패 (${zipUrl}):`, err);
+          }
+        }
+
+        if (!loadedDatasets) throw lastError || new Error('ZIP 파일을 읽지 못했습니다');
 
         // 3. 캐시 저장 (다음 실행 시 즉시 로드)
         try {
-          const payload = datasets.map(d => ({
+          const payload = loadedDatasets.map((d) => ({
             name: d.name,
-            rows: d.data.map(r => [r.date, r.open, r.high, r.low, r.close, r.ma5??null, r.ma20??null, r.ma60??null, r.ma120??null, r.volume]),
+            rows: d.data.map((r) => [r.date, r.open, r.high, r.low, r.close, r.ma5 ?? null, r.ma20 ?? null, r.ma60 ?? null, r.ma120 ?? null, r.volume]),
           }));
-          await window.storage.set(CACHE_KEY, JSON.stringify(payload));
-        } catch (e) { console.warn('캐시 저장 실패 (용량 초과 가능):', e.message); }
+          if (storage) {
+            await storage.set(CACHE_KEY, JSON.stringify(payload));
+          }
+        } catch (e) {
+          console.warn('캐시 저장 실패 (용량 초과 가능):', e.message);
+        }
 
-        setGithubDatasets(datasets);
-        setLoadStatus(`로드 완료 (${datasets.length}종목)`);
-        const pick = datasets[Math.floor(Math.random() * datasets.length)];
+        setGithubDatasets(loadedDatasets);
+        setLoadStatus(`로드 완료 (${loadedDatasets.length}종목)`);
+        const pick = loadedDatasets[Math.floor(Math.random() * loadedDatasets.length)];
         const start = randomStart(pick.data.length);
         setAllData(pick.data); setDataSource(pick.name);
         setCurrentIndex(start); setPrice(pick.data[start].close);
       } catch (err) {
         // fetch 실패 시 랜덤 데이터로 폴백
-        setLoadStatus(`GitHub 로드 실패 (${err.message}) — 랜덤 데이터로 시작합니다`);
+        setLoadStatus(`데이터 로드 실패 (${err.message}) — 랜덤 데이터로 시작합니다`);
         const d = generateData(300);
         const start = randomStart(d.length);
         setAllData(d); setDataSource('랜덤 데이터');
@@ -851,7 +906,10 @@ export default function TradingSimulator() {
                     🎲 랜덤 선택
                   </button>
                   <button onClick={async () => {
-                    try { await window.storage.delete(CACHE_KEY); } catch {}
+                    try {
+                      const storage = getStorageApi();
+                      if (storage) await storage.delete(CACHE_KEY);
+                    } catch {}
                     setMessage('캐시를 삭제했습니다. 아티팩트를 새로고침하면 최신 데이터를 다시 받아옵니다.');
                     setShowDataPanel(false);
                   }} className="text-[10px] px-2 py-0.5 rounded border border-[#2c3a4f] text-slate-400 hover:text-slate-200 hover:border-slate-500 transition-colors">
