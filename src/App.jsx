@@ -727,12 +727,20 @@ export default function TradingSimulator() {
   const refreshChartOnly = async () => {
     setMessage(null);
     const snapshot = liquidateHoldings();
-    if (!customDatasets.length) { applyDataset(generateData(300), '랜덤 데이터', true, snapshot); return; }
-    const pick = customDatasets[Math.floor(Math.random() * customDatasets.length)];
+    const pool = [...githubDatasets, ...customDatasets];
+    if (!pool.length) {
+      applyDataset(generateData(300), '랜덤 데이터', true, snapshot);
+      return;
+    }
+
+    const pick = pool[Math.floor(Math.random() * pool.length)];
     setMessage('차트를 불러오는 중...');
     try {
-      const parsed = await getParsedDataset(pick);
-      if (!parsed || parsed.length < 2) { applyDataset(generateData(300), '랜덤 데이터', true, snapshot); return; }
+      const parsed = pick.data ? pick.data : await getParsedDataset(pick);
+      if (!parsed || parsed.length < 2) {
+        applyDataset(generateData(300), '랜덤 데이터', true, snapshot);
+        return;
+      }
       applyDataset(parsed, pick.name, true, snapshot);
     } catch {
       applyDataset(generateData(300), '랜덤 데이터', true, snapshot);
