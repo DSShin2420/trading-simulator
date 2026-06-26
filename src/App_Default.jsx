@@ -1,10 +1,4 @@
-import React, { useState, useMemo, useRef, useEffect } from 'react';
-
-// ---------- 기본 데이터: GitHub Pages에서 자동 로드 ----------
-// /docs 폴더에 올려둔 ZIP을 앱 시작 시 자동으로 fetch해서 파싱합니다.
-// 한 번 받은 데이터는 Artifact 저장소에 캐시되어 다음 실행 시 즉시 로드됩니다.
-const AUTO_LOAD_ZIP_URL = 'https://dsshin2420.github.io/trading-simulator/KOSDAQ_Kospi_50.zip';
-const CACHE_KEY = 'trading_sim_github_zip_v1';
+import React, { useState, useMemo, useRef } from 'react';
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, BarChart, ReferenceDot, ReferenceLine
@@ -203,9 +197,6 @@ const ChartTooltip = ({ active, payload }) => {
 const START_CASH = 10_000_000;
 
 export default function TradingSimulator() {
-  const [isLoading, setIsLoading] = useState(true);
-  const [loadStatus, setLoadStatus] = useState('데이터 불러오는 중...');
-  const [githubDatasets, setGithubDatasets] = useState([]); // GitHub ZIP에서 파싱된 데이터셋
   const [allData, setAllData] = useState(() => generateData(300));
   const [dataSource, setDataSource] = useState('랜덤 데이터');
   const [csvText, setCsvText] = useState('');
@@ -240,92 +231,6 @@ export default function TradingSimulator() {
   const parseCacheRef = useRef(new Map());
   const exportTextareaRef = useRef(null);
 
-  // ── 시작 시: GitHub Pages ZIP 자동 로드 ──
-  // 캐시가 있으면 즉시 사용, 없으면 fetch → 파싱 → 캐시 저장
-  useEffect(() => {
-    (async () => {
-      // 1. 캐시 확인
-      try {
-        const cached = await window.storage.get(CACHE_KEY);
-        if (cached) {
-          const payload = JSON.parse(cached.value);
-          const datasets = payload.map((d, i) => ({
-            id: `gh:${i}:${d.name}`, name: d.name, kind: 'saved',
-            data: d.rows.map((r, idx) => ({
-              idx, date: r[0], open: r[1], high: r[2], low: r[3], close: r[4],
-              ma5: r[5]??undefined, ma20: r[6]??undefined,
-              ma60: r[7]??undefined, ma120: r[8]??undefined,
-              volume: r[9]??0, range: [r[3], r[2]],
-            })),
-          }));
-          setGithubDatasets(datasets);
-          const pick = datasets[Math.floor(Math.random() * datasets.length)];
-          const start = randomStart(pick.data.length);
-          setAllData(pick.data); setDataSource(pick.name);
-          setCurrentIndex(start); setPrice(pick.data[start].close);
-          setIsLoading(false);
-          return;
-        }
-      } catch {}
-
-      // 2. GitHub Pages에서 ZIP fetch
-      try {
-        setLoadStatus('GitHub에서 ZIP 다운로드 중...');
-        const res = await fetch(AUTO_LOAD_ZIP_URL, { signal: AbortSignal.timeout(30000) });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const buffer = await res.arrayBuffer();
-
-        // ZIP 헤더 검증
-        const magic = new Uint8Array(buffer.slice(0, 4));
-        if (!(magic[0]===0x50&&magic[1]===0x4B&&magic[2]===0x03&&magic[3]===0x04))
-          throw new Error('유효한 ZIP 파일이 아닙니다');
-
-        setLoadStatus('CSV 파싱 중...');
-        const zipEntries = listZipEntries(buffer);
-        const csvList = zipEntries.filter(en =>
-          /\.(csv|txt)$/i.test(en.name) && en.uncompSize > 0 &&
-          !en.name.includes('__MACOSX') && !en.name.split('/').pop().startsWith('.')
-        );
-
-        const datasets = [];
-        for (const en of csvList) {
-          try {
-            const text = await getZipEntryText(buffer, en);
-            const parsed = parseCustomData(text);
-            if (parsed && parsed.length >= 2) {
-              datasets.push({ id: `gh:${datasets.length}:${en.name}`, name: en.name, kind: 'saved', data: parsed });
-            }
-          } catch {}
-        }
-
-        if (!datasets.length) throw new Error('CSV 파일을 찾지 못했습니다');
-
-        // 3. 캐시 저장 (다음 실행 시 즉시 로드)
-        try {
-          const payload = datasets.map(d => ({
-            name: d.name,
-            rows: d.data.map(r => [r.date, r.open, r.high, r.low, r.close, r.ma5??null, r.ma20??null, r.ma60??null, r.ma120??null, r.volume]),
-          }));
-          await window.storage.set(CACHE_KEY, JSON.stringify(payload));
-        } catch (e) { console.warn('캐시 저장 실패 (용량 초과 가능):', e.message); }
-
-        setGithubDatasets(datasets);
-        setLoadStatus(`로드 완료 (${datasets.length}종목)`);
-        const pick = datasets[Math.floor(Math.random() * datasets.length)];
-        const start = randomStart(pick.data.length);
-        setAllData(pick.data); setDataSource(pick.name);
-        setCurrentIndex(start); setPrice(pick.data[start].close);
-      } catch (err) {
-        // fetch 실패 시 랜덤 데이터로 폴백
-        setLoadStatus(`GitHub 로드 실패 (${err.message}) — 랜덤 데이터로 시작합니다`);
-        const d = generateData(300);
-        const start = randomStart(d.length);
-        setAllData(d); setDataSource('랜덤 데이터');
-        setCurrentIndex(start); setPrice(d[start].close);
-      }
-      setIsLoading(false);
-    })();
-  }, []);
   const today = allData[currentIndex];
   const visible = useMemo(() => allData.slice(0, currentIndex + 1), [allData, currentIndex]);
   const portfolioValue = cash + shares * today.close;
@@ -636,13 +541,18 @@ export default function TradingSimulator() {
   };
 
   // 계좌(현금/보유주식/수익) 전체 초기화 + 새 데이터로 시작 — 게임을 완전히 새로 시작
-  const resetAll = () => {
+  const resetAll = async () => {
     setMessage(null);
-    // GitHub 데이터 + 사용자 추가 데이터를 합쳐서 무작위 선택
-    const pool = [...githubDatasets, ...customDatasets];
-    if (!pool.length) { applyDataset(generateData(300), '랜덤 데이터'); return; }
-    const pick = pool[Math.floor(Math.random() * pool.length)];
-    applyDataset(pick.data, pick.name);
+    if (!customDatasets.length) { applyDataset(generateData(300), '랜덤 데이터'); return; }
+    const pick = customDatasets[Math.floor(Math.random() * customDatasets.length)];
+    setMessage('데이터를 불러오는 중...');
+    try {
+      const parsed = await getParsedDataset(pick);
+      if (!parsed || parsed.length < 2) { applyDataset(generateData(300), '랜덤 데이터'); return; }
+      applyDataset(parsed, pick.name);
+    } catch {
+      applyDataset(generateData(300), '랜덤 데이터');
+    }
   };
 
   // 계좌(현금/수익)는 유지하되, 차트를 바꾸기 전에 보유 주식을 현재가로 전량 청산해서
@@ -791,15 +701,6 @@ export default function TradingSimulator() {
     [tradeLog, chartData]
   );
 
-  if (isLoading) {
-    return (
-      <div className="min-h-screen bg-[#0d1320] flex flex-col items-center justify-center gap-3">
-        <div className="w-8 h-8 border-2 border-slate-600 border-t-emerald-400 rounded-full animate-spin"></div>
-        <p className="text-slate-400 text-sm">{loadStatus}</p>
-      </div>
-    );
-  }
-
   return (
     <div className="min-h-screen bg-[#0d1320] text-slate-200 font-sans p-4 md:p-6">
       <div className="max-w-6xl mx-auto">
@@ -836,42 +737,6 @@ export default function TradingSimulator() {
             <div className="flex items-center justify-between">
               <h2 className="text-xs font-semibold text-slate-400">데이터 불러오기</h2>
               <span className="text-[10px] text-slate-500">현재: {dataSource} ({allData.length}일)</span>
-            </div>
-
-            {/* GitHub 기본 데이터 */}
-            <div className="bg-[#0d1320] rounded-lg p-3 space-y-2">
-              <div className="flex items-center justify-between">
-                <p className="text-[11px] text-slate-300 font-semibold">📦 기본 데이터 ({githubDatasets.length}종목)</p>
-                <div className="flex gap-2">
-                  <button onClick={() => {
-                    if (!githubDatasets.length) return;
-                    const pick = githubDatasets[Math.floor(Math.random() * githubDatasets.length)];
-                    applyDataset(pick.data, pick.name); setShowDataPanel(false);
-                  }} className="text-[10px] px-2 py-0.5 rounded border border-emerald-700/60 text-emerald-400 hover:bg-emerald-600/10 transition-colors">
-                    🎲 랜덤 선택
-                  </button>
-                  <button onClick={async () => {
-                    try { await window.storage.delete(CACHE_KEY); } catch {}
-                    setMessage('캐시를 삭제했습니다. 아티팩트를 새로고침하면 최신 데이터를 다시 받아옵니다.');
-                    setShowDataPanel(false);
-                  }} className="text-[10px] px-2 py-0.5 rounded border border-[#2c3a4f] text-slate-400 hover:text-slate-200 hover:border-slate-500 transition-colors">
-                    🔄 캐시 새로고침
-                  </button>
-                </div>
-              </div>
-              {githubDatasets.length > 0 ? (
-                <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
-                  {githubDatasets.map((d) => (
-                    <button key={d.id} onClick={() => { applyDataset(d.data, d.name); setShowDataPanel(false); }}
-                      className={`text-[11px] px-2 py-1 rounded border ${dataSource === d.name ? 'border-emerald-500 text-emerald-300' : 'border-[#2c3a4f] text-slate-400'} hover:text-slate-200 hover:border-slate-500 transition-colors`}>
-                      {d.name.replace('_KS_history.csv','').replace('_KQ_history.csv','')}
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-[10px] text-amber-400">GitHub 데이터를 불러오지 못했습니다. 아티팩트를 새로고침하거나 아래에서 직접 파일을 올려주세요.</p>
-              )}
-              <p className="text-[10px] text-slate-600">{AUTO_LOAD_ZIP_URL}</p>
             </div>
 
             <div className="border border-dashed border-[#2c3a4f] rounded-lg p-4 text-center">
