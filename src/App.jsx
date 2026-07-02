@@ -258,8 +258,8 @@ export default function TradingSimulator() {
   const [gitUploadStatus, setGitUploadStatus] = useState('idle');
   const [autoSaveStatus, setAutoSaveStatus] = useState(''); // 자동 저장 상태 알림창용
 
-  // GitHub 환경 고정 상수
-  const GITHUB_TOKEN = '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';
+  // VITE 환경변수 로딩 및 고정 설정 상수
+  const GITHUB_TOKEN = import.meta.env.VITE_GITHUB_TOKEN || '';
   const GITHUB_OWNER = 'dsshin2420';
   const GITHUB_REPO = 'trading-simulator';
   const GITHUB_BRANCH = 'main';
@@ -591,6 +591,10 @@ export default function TradingSimulator() {
   // ---------- GitHub API 직접 백그라운드 PUT 업로드 ----------
   const directUploadToGithub = async (csvContent, fileName) => {
     try {
+      if (!GITHUB_TOKEN) {
+        console.warn('VITE_GITHUB_TOKEN 환경 변수가 누락되었습니다.');
+        return false;
+      }
       const cleanPath = GITHUB_PATH.replace(/\/+$/, '');
       const fullPath = cleanPath ? `${cleanPath}/${fileName}` : fileName;
 
