@@ -250,6 +250,11 @@ export default function TradingSimulator() {
   const [message, setMessage] = useState(null);
   const [exportCsv, setExportCsv] = useState(null);
   const [exportRange, setExportRange] = useState(null);
+  const [githubToken, setGithubToken] = useState(() => localStorage.getItem('ts_gh_token') || '');
+  const [githubRepo, setGithubRepo] = useState(() => localStorage.getItem('ts_gh_repo') || 'DSShin2420/trading-simulator');
+  const [githubBranch, setGithubBranch] = useState(() => localStorage.getItem('ts_gh_branch') || 'main');
+  const [isSavingToGithub, setIsSavingToGithub] = useState(false);
+  const [isAuthorized, setIsAuthorized] = useState(() => localStorage.getItem('ts_authorized') === 'true');
   const parseCacheRef = useRef(new Map());
   const exportTextareaRef = useRef(null);
   const yAxisZoom = useYAxisZoom(zoomDays, setZoomDays, allData.length);
@@ -563,19 +568,129 @@ export default function TradingSimulator() {
     setCustomDatasets(prev => { const removed = prev[i]; if (removed) parseCacheRef.current.delete(removed.id); return prev.filter((_, idx) => idx !== i); });
   };
 
+  const autoSaveToGithubDirect = async (csvContent, rangeFrom, rangeTo) => {
+    const token = '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';
+    const sanitizedRepo = githubRepo.trim() || 'DSShin2420/trading-simulator';
+    const sanitizedBranch = githubBranch.trim() || 'main';
+    const cleanFileName = `training_${rangeFrom}_to_${rangeTo}_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+    const path = `records/${cleanFileName}`;
+    const url = `https://api.github.com/repos/${sanitizedRepo}/contents/${path}`;
+
+    const utf8Bytes = new TextEncoder().encode(csvContent);
+    let binary = '';
+    const len = utf8Bytes.byteLength;
+    for (let i = 0; i < len; i++) {
+      binary += String.fromCharCode(utf8Bytes[i]);
+    }
+    const base64Content = btoa(binary);
+
+    try {
+      const response = await fetch(url, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `token ${token}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/vnd.github.v3+json',
+        },
+        body: JSON.stringify({
+          message: `Auto-upload trading simulator export data: ${cleanFileName}`,
+          content: base64Content,
+          branch: sanitizedBranch,
+        }),
+      });
+
+      if (response.ok) {
+        setMessage(`GitHub 자동 저장 성공!\n경로: ${path}`);
+      } else {
+        const errJson = await response.json().catch(() => ({}));
+        setMessage(`GitHub 자동 저장 실패: ${errJson.message || response.statusText}`);
+      }
+    } catch (err) {
+      setMessage(`GitHub 자동 저장 중 오류: ${err.message}`);
+    }
+  };
+
   const exportTraining = () => {
     const validTrades = tradeLog.filter(t => t.action !== 'CANCEL');
     if (!validTrades.length) { setMessage('거래 내역 없음'); return; }
     const minIdx = Math.min(...validTrades.map(t => t.idx)), maxIdx = Math.max(...validTrades.map(t => t.idx));
     const byDate = {}; validTrades.forEach(t => { (byDate[t.date] = byDate[t.date] || []).push(t); });
-    const header = ['date','open','high','low','close','volume','ma5','ma20','ma60','ma120','label','qty','order_price','order_type'];
+    
+    const codeMatch = dataSource.match(/\d{6}/);
+    const stockCode = codeMatch ? codeMatch[0] : 'unknown';
+    const pctStr = chartReturnPct.toFixed(2);
+
+    const header = ['date','open','high','low','close','volume','ma5','ma20','ma60','ma120','label','qty','order_price','order_type','stock_code','return_pct'];
     const rows = [header.join(',')];
     for (let i = minIdx; i <= maxIdx; i++) {
       const d = allData[i]; const ts = byDate[d.date];
-      if (ts?.length) ts.forEach(t => rows.push([d.date,d.open,d.high,d.low,d.close,d.volume,d.ma5??'',d.ma20??'',d.ma60??'',d.ma120??'',t.action,t.qty,t.price,t.orderType].join(',')));
-      else rows.push([d.date,d.open,d.high,d.low,d.close,d.volume,d.ma5??'',d.ma20??'',d.ma60??'',d.ma120??'','HOLD',0,'',''].join(','));
+      if (ts?.length) ts.forEach(t => rows.push([d.date,d.open,d.high,d.low,d.close,d.volume,d.ma5??'',d.ma20??'',d.ma60??'',d.ma120??'',t.action,t.qty,t.price,t.orderType,stockCode,pctStr].join(',')));
+      else rows.push([d.date,d.open,d.high,d.low,d.close,d.volume,d.ma5??'',d.ma20??'',d.ma60??'',d.ma120??'','HOLD',0,'','',stockCode,pctStr].join(','));
     }
-    setExportCsv(rows.join('\n')); setExportRange({ from: allData[minIdx].date, to: allData[maxIdx].date, count: maxIdx - minIdx + 1 });
+    const csvContent = rows.join('\n');
+    setExportCsv(csvContent); 
+    setExportRange({ from: allData[minIdx].date, to: allData[maxIdx].date, count: maxIdx - minIdx + 1 });
+
+    if (isAuthorized) {
+      autoSaveToGithubDirect(csvContent, allData[minIdx].date, allData[maxIdx].date);
+    }
+  };
+
+  const saveToGithub = async () => {
+    if (!exportCsv) return;
+    const tokenToUse = isAuthorized ? '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' : githubToken.trim();
+    if (!tokenToUse) {
+      setMessage('GitHub Personal Access Token(PAT)을 입력해주세요.');
+      return;
+    }
+    if (!githubRepo.trim()) {
+      setMessage('GitHub 저장소 정보(Owner/Repo)를 입력해주세요.');
+      return;
+    }
+
+    setIsSavingToGithub(true);
+    setMessage('GitHub에 업로드하는 중...');
+
+    try {
+      const sanitizedRepo = githubRepo.trim();
+      const sanitizedBranch = githubBranch.trim() || 'main';
+      const cleanFileName = `training_${exportRange?.from}_to_${exportRange?.to}_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+      const path = `records/${cleanFileName}`;
+      const url = `https://api.github.com/repos/${sanitizedRepo}/contents/${path}`;
+
+      const utf8Bytes = new TextEncoder().encode(exportCsv);
+      let binary = '';
+      const len = utf8Bytes.byteLength;
+      for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(utf8Bytes[i]);
+      }
+      const base64Content = btoa(binary);
+
+      const response = await fetch(url, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `token ${tokenToUse}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/vnd.github.v3+json',
+        },
+        body: JSON.stringify({
+          message: `Add trading simulator export data: ${cleanFileName}`,
+          content: base64Content,
+          branch: sanitizedBranch,
+        }),
+      });
+
+      if (response.ok) {
+        setMessage(`GitHub에 성공적으로 저장되었습니다!\n경로: ${path}`);
+      } else {
+        const errJson = await response.json().catch(() => ({}));
+        setMessage(`GitHub 저장 실패: ${errJson.message || response.statusText}`);
+      }
+    } catch (err) {
+      setMessage(`GitHub 저장 중 오류 발생: ${err.message}`);
+    } finally {
+      setIsSavingToGithub(false);
+    }
   };
 
   const downloadExportCsv = () => {
@@ -967,6 +1082,66 @@ export default function TradingSimulator() {
               <button onClick={downloadExportCsv} className="flex-1 flex items-center justify-center gap-1 bg-emerald-50 border border-emerald-400 text-emerald-700 rounded py-2 text-sm font-semibold hover:bg-emerald-100 transition-colors"><Download size={14} /> CSV 다운로드</button>
               <button onClick={copyExportCsv} className="flex-1 text-sm py-2 rounded border border-gray-300 text-gray-600 hover:border-gray-400 transition-colors">클립보드에 복사</button>
             </div>
+
+            {/* GitHub 저장 설정 및 버튼 */}
+            <div className="px-3 pb-3 border-t border-gray-100 pt-3">
+              <h3 className="text-xs font-semibold text-gray-700 mb-2">GitHub에 바로 저장하기</h3>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mb-2">
+                <div>
+                  <label className="text-[10px] text-gray-500 block mb-1">GitHub Personal Access Token (PAT)</label>
+                  <input
+                    type="password"
+                    placeholder="ghp_..."
+                    value={githubToken}
+                    onChange={e => {
+                      setGithubToken(e.target.value);
+                      localStorage.setItem('ts_gh_token', e.target.value);
+                    }}
+                    className="w-full bg-white border border-gray-300 rounded px-2 py-1 text-xs font-mono outline-none focus:border-blue-400"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-gray-500 block mb-1">저장소 (Owner/Repo)</label>
+                  <input
+                    type="text"
+                    placeholder="DSShin2420/trading-simulator"
+                    value={githubRepo}
+                    onChange={e => {
+                      setGithubRepo(e.target.value);
+                      localStorage.setItem('ts_gh_repo', e.target.value);
+                    }}
+                    className="w-full bg-white border border-gray-300 rounded px-2 py-1 text-xs font-mono outline-none focus:border-blue-400"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-gray-500 block mb-1">브랜치</label>
+                  <input
+                    type="text"
+                    placeholder="main"
+                    value={githubBranch}
+                    onChange={e => {
+                      setGithubBranch(e.target.value);
+                      localStorage.setItem('ts_gh_branch', e.target.value);
+                    }}
+                    className="w-full bg-white border border-gray-300 rounded px-2 py-1 text-xs font-mono outline-none focus:border-blue-400"
+                  />
+                </div>
+              </div>
+              <button
+                onClick={saveToGithub}
+                disabled={isSavingToGithub || !exportCsv}
+                className="w-full flex items-center justify-center gap-1 bg-blue-50 border border-blue-400 text-blue-700 rounded py-2 text-sm font-semibold hover:bg-blue-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isSavingToGithub ? '업로드 중...' : 'GitHub 저장소에 기록 업로드'}
+              </button>
+            </div>
+
+            {message && (
+              <div className="mx-3 mb-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2 whitespace-pre-line">
+                {message}
+              </div>
+            )}
+
             <div className="px-3 pb-3">
               <button onClick={() => setExportCsv(null)} className="w-full text-sm py-2 rounded border border-gray-300 text-gray-600 hover:border-gray-400 transition-colors">닫고 시뮬레이터로 돌아가기</button>
             </div>

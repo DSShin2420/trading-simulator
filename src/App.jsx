@@ -21,7 +21,7 @@ import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, BarChart, ReferenceDot, ReferenceLine
 } from 'recharts';
-import { ChevronRight, RotateCcw, Download, X, Clock, ZoomIn, ZoomOut, Maximize2, Upload } from 'lucide-react';
+import { ChevronRight, RotateCcw, Download, X, Clock, ZoomIn, ZoomOut, Maximize2, Upload, Settings } from 'lucide-react';
 
 function generateData(days) {
   const data = [];
@@ -154,18 +154,16 @@ const ChartTooltip = ({ active, payload }) => {
 };
 
 // ---------- Y축 드래그 확대/축소 핸들러 ----------
-// Y축 영역을 700ms 이상 꾹 누른 상태에서 위/아래로 드래그하면 줌이 변경됩니다.
 function useYAxisZoom(zoomDays, setZoomDays, allDataLength) {
   const pressTimer = useRef(null);
   const isDraggingRef = useRef(false);
   const startY = useRef(0);
   const startZoom = useRef(zoomDays);
-  const [isActive, setIsActive] = useState(false); // 드래그 모드 진입 여부 (시각 피드백용)
+  const [isActive, setIsActive] = useState(false);
 
   const clearPressTimer = () => { if (pressTimer.current) { clearTimeout(pressTimer.current); pressTimer.current = null; } };
 
   const onPointerDown = useCallback((e) => {
-    // 텍스트 선택/스크롤 등 브라우저 기본 동작을 즉시 차단 (지연 없이 바로 막아야 함)
     e.preventDefault();
     if (e.stopPropagation) e.stopPropagation();
     const clientY = e.clientY ?? (e.touches && e.touches[0] ? e.touches[0].clientY : 0);
@@ -187,8 +185,8 @@ function useYAxisZoom(zoomDays, setZoomDays, allDataLength) {
     if (!isDraggingRef.current) return;
     e.preventDefault();
     const clientY = e.clientY ?? (e.touches && e.touches[0] ? e.touches[0].clientY : startY.current);
-    const dy = startY.current - clientY; // 위로 드래그 → 양수 → 확대(더 많은 일수 표시)
-    const factor = dy / 2; // 픽셀당 1/2일 변화
+    const dy = startY.current - clientY;
+    const factor = dy / 2;
     const newZoom = Math.min(allDataLength, Math.max(10, Math.round(startZoom.current - factor)));
     setZoomDays(newZoom);
   }, [allDataLength, setZoomDays]);
@@ -254,6 +252,19 @@ export default function TradingSimulator() {
   const exportTextareaRef = useRef(null);
   const yAxisZoom = useYAxisZoom(zoomDays, setZoomDays, allData.length);
 
+  // ---------- 보안 및 자동 업로드 설정 State ----------
+  const [isUnlocked, setIsUnlocked] = useState(false);
+  const [passwordInput, setPasswordInput] = useState('');
+  const [gitUploadStatus, setGitUploadStatus] = useState('idle');
+  const [autoSaveStatus, setAutoSaveStatus] = useState(''); // 자동 저장 상태 알림창용
+
+  // GitHub 환경 고정 상수
+  const GITHUB_TOKEN = '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';
+  const GITHUB_OWNER = 'dsshin2420';
+  const GITHUB_REPO = 'trading-simulator';
+  const GITHUB_BRANCH = 'main';
+  const GITHUB_PATH = 'training-data';
+
   useEffect(() => {
     (async () => {
       const storage = getStorageApi();
@@ -266,9 +277,21 @@ export default function TradingSimulator() {
           const pick = datasets[Math.floor(Math.random() * datasets.length)];
           const start = randomStart(pick.data.length);
           setAllData(pick.data); setDataSource(pick.name); setCurrentIndex(start); setPrice(pick.data[start].close);
-          setIsLoading(false); return;
+          setIsLoading(false);
         }
       } catch (err) { console.warn('캐시 복원 실패:', err); }
+
+      // 자동 잠금해제 상태 복원
+      if (storage) {
+        try {
+          const unlockedCached = await storage.get('sim_unlocked');
+          if (unlockedCached && unlockedCached.value === 'true') {
+            setIsUnlocked(true);
+          }
+        } catch (e) { console.warn('설정 불러오기 실패:', e); }
+      }
+
+      if (githubDatasets.length > 0) return;
 
       try {
         const candidateUrls = [AUTO_LOAD_ZIP_URL];
@@ -304,7 +327,7 @@ export default function TradingSimulator() {
         setGithubDatasets(loadedDatasets);
         const pick = loadedDatasets[Math.floor(Math.random() * loadedDatasets.length)];
         const start = randomStart(pick.data.length);
-        setAllData(pick.data); setDataSource(pick.name); setCurrentIndex(start); setPrice(pick.data[start].close);
+        setAllData(loadedDatasets[0].data); setDataSource(loadedDatasets[0].name); setCurrentIndex(start); setPrice(loadedDatasets[0].data[start].close);
       } catch (err) {
         setLoadStatus(`로드 실패 (${err.message}) — 랜덤 데이터로 시작`);
         const d = generateData(300); const start = randomStart(d.length);
@@ -484,7 +507,7 @@ export default function TradingSimulator() {
 
   const getParsedDataset = async (entry) => {
     if (parseCacheRef.current.has(entry.id)) return parseCacheRef.current.get(entry.id);
-    const text = entry.kind === 'zip' ? await getZipEntryText(entry.buffer, entry.zipEntry) : entry.raw;
+    const text = entry.kind === 'zip' ? await getZipEntryText(buffer, entry.zipEntry) : entry.raw;
     const parsed = parseCustomData(text); if (parsed) parseCacheRef.current.set(entry.id, parsed);
     return parsed;
   };
@@ -516,8 +539,122 @@ export default function TradingSimulator() {
     setPendingOrders([]); return finalCash;
   };
 
+  // ---------- CSV 데이터 가공 (종목 코드, 이번차트 최종 수익률 컬럼 추가) ----------
+  const generateExportCsvData = (logs, dataList, srcName, returnPctVal) => {
+    const validTrades = logs.filter(t => t.action !== 'CANCEL');
+    if (!validTrades.length) return null;
+
+    const minIdx = Math.min(...validTrades.map(t => t.idx));
+    const maxIdx = Math.max(...validTrades.map(t => t.idx));
+    const byDate = {};
+    validTrades.forEach(t => { (byDate[t.date] = byDate[t.date] || []).push(t); });
+
+    const stockCode = srcName.match(/\d+/)?.[0] || 'RANDOM';
+    const returnPctStr = returnPctVal.toFixed(2);
+
+    const header = [
+      'date', 'open', 'high', 'low', 'close', 'volume', 'ma5', 'ma20', 'ma60', 'ma120',
+      'label', 'qty', 'order_price', 'order_type', 'stock_code', 'chart_return_pct'
+    ];
+    const rows = [header.join(',')];
+
+    for (let i = minIdx; i <= maxIdx; i++) {
+      const d = dataList[i];
+      const ts = byDate[d.date];
+      if (ts?.length) {
+        ts.forEach(t => {
+          rows.push([
+            d.date, d.open, d.high, d.low, d.close, d.volume,
+            d.ma5 ?? '', d.ma20 ?? '', d.ma60 ?? '', d.ma120 ?? '',
+            t.action, t.qty, t.price, t.orderType, stockCode, returnPctStr
+          ].join(','));
+        });
+      } else {
+        rows.push([
+          d.date, d.open, d.high, d.low, d.close, d.volume,
+          d.ma5 ?? '', d.ma20 ?? '', d.ma60 ?? '', d.ma120 ?? '',
+          'HOLD', 0, '', '', stockCode, returnPctStr
+        ].join(','));
+      }
+    }
+
+    return {
+      csv: rows.join('\n'),
+      from: dataList[minIdx].date,
+      to: dataList[maxIdx].date,
+      count: maxIdx - minIdx + 1,
+      stockCode,
+      fileName: `training_${stockCode}_${dataList[minIdx].date}_to_${dataList[maxIdx].date}_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`
+    };
+  };
+
+  // ---------- GitHub API 직접 백그라운드 PUT 업로드 ----------
+  const directUploadToGithub = async (csvContent, fileName) => {
+    try {
+      const cleanPath = GITHUB_PATH.replace(/\/+$/, '');
+      const fullPath = cleanPath ? `${cleanPath}/${fileName}` : fileName;
+
+      const bytes = new TextEncoder().encode(csvContent);
+      let binary = '';
+      const len = bytes.byteLength;
+      for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      const contentBase64 = btoa(binary);
+
+      const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${fullPath}`;
+      const response = await fetch(url, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${GITHUB_TOKEN}`,
+          'Accept': 'application/vnd.github+json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          message: `Auto-upload training log: ${fileName}`,
+          content: contentBase64,
+          branch: GITHUB_BRANCH
+        })
+      });
+
+      return response.ok;
+    } catch (err) {
+      console.error('Git upload error:', err);
+      return false;
+    }
+  };
+
+  // ---------- [자동 업로드] 매매기록 상태 확인 후 순차 동기화 업로드 및 차트 초기화 ----------
   const refreshChartOnly = async () => {
-    setMessage(null); const snapshot = liquidateHoldings();
+    setMessage(null);
+    setAutoSaveStatus('');
+
+    const validTrades = tradeLog.filter(t => t.action !== 'CANCEL');
+    
+    // 1. 비밀번호가 설정(잠금해제)되었고 매매기록이 존재할 때
+    if (isUnlocked) {
+      if (validTrades.length > 0) {
+        setAutoSaveStatus('저장 중...');
+        const exportData = generateExportCsvData(tradeLog, allData, dataSource, chartReturnPct);
+        if (exportData) {
+          // 비동기 업로드를 확실히 끝내고 다음 종목으로 넘어가도록 await 강제
+          const success = await directUploadToGithub(exportData.csv, exportData.fileName);
+          if (success) {
+            setAutoSaveStatus('자동저장 성공');
+            console.log('자동저장 완료:', exportData.fileName);
+          } else {
+            setAutoSaveStatus('자동저장 실패');
+          }
+        }
+      } else {
+        setAutoSaveStatus('매매기록 없음');
+      }
+    } else {
+      setAutoSaveStatus('잠금상태');
+    }
+
+    // 2. 이후 안전하게 청산 후 다음 차트 로드 진행
+    const snapshot = liquidateHoldings();
     const pool = [...githubDatasets, ...customDatasets];
     if (!pool.length) { applyDataset(generateData(300), '랜덤 데이터', true, snapshot); return; }
     const pick = pool[Math.floor(Math.random() * pool.length)];
@@ -564,18 +701,14 @@ export default function TradingSimulator() {
   };
 
   const exportTraining = () => {
-    const validTrades = tradeLog.filter(t => t.action !== 'CANCEL');
-    if (!validTrades.length) { setMessage('거래 내역 없음'); return; }
-    const minIdx = Math.min(...validTrades.map(t => t.idx)), maxIdx = Math.max(...validTrades.map(t => t.idx));
-    const byDate = {}; validTrades.forEach(t => { (byDate[t.date] = byDate[t.date] || []).push(t); });
-    const header = ['date','open','high','low','close','volume','ma5','ma20','ma60','ma120','label','qty','order_price','order_type'];
-    const rows = [header.join(',')];
-    for (let i = minIdx; i <= maxIdx; i++) {
-      const d = allData[i]; const ts = byDate[d.date];
-      if (ts?.length) ts.forEach(t => rows.push([d.date,d.open,d.high,d.low,d.close,d.volume,d.ma5??'',d.ma20??'',d.ma60??'',d.ma120??'',t.action,t.qty,t.price,t.orderType].join(',')));
-      else rows.push([d.date,d.open,d.high,d.low,d.close,d.volume,d.ma5??'',d.ma20??'',d.ma60??'',d.ma120??'','HOLD',0,'',''].join(','));
+    const exportData = generateExportCsvData(tradeLog, allData, dataSource, chartReturnPct);
+    if (!exportData) {
+      setMessage('매매 기록이 없습니다.');
+      return;
     }
-    setExportCsv(rows.join('\n')); setExportRange({ from: allData[minIdx].date, to: allData[maxIdx].date, count: maxIdx - minIdx + 1 });
+    setExportCsv(exportData.csv);
+    setExportRange({ from: exportData.from, to: exportData.to, count: exportData.count });
+    setGitUploadStatus('idle');
   };
 
   const downloadExportCsv = () => {
@@ -583,7 +716,8 @@ export default function TradingSimulator() {
     try {
       const url = URL.createObjectURL(new Blob([exportCsv], { type: 'text/csv;charset=utf-8;' }));
       const a = document.createElement('a'); a.href = url;
-      a.download = `training_${exportRange?.from}_to_${exportRange?.to}_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+      const stockCode = dataSource.match(/\d+/)?.[0] || 'RANDOM';
+      a.download = `training_${stockCode}_${exportRange?.from}_to_${exportRange?.to}_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
       document.body.appendChild(a); a.click(); document.body.removeChild(a); setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch { setMessage('다운로드 실패. 직접 복사해주세요.'); }
   };
@@ -594,6 +728,41 @@ export default function TradingSimulator() {
     try { const ta = exportTextareaRef.current; if (ta) { ta.focus(); ta.select(); if (document.execCommand('copy')) { setMessage('클립보드에 복사했습니다.'); return; } } } catch {}
     setMessage('자동 복사 실패. Ctrl+C로 복사해주세요.');
     exportTextareaRef.current?.focus(); exportTextareaRef.current?.select();
+  };
+
+  const handlePasswordSubmit = async () => {
+    if (passwordInput === '2420') {
+      setIsUnlocked(true);
+      const storage = getStorageApi();
+      if (storage) {
+        try { await storage.set('sim_unlocked', 'true'); } catch {}
+      }
+      setMessage('자동 저장이 활성화되었습니다.');
+    } else {
+      setMessage('비밀번호가 일치하지 않습니다.');
+    }
+    setPasswordInput('');
+  };
+
+  const manualUploadToGithub = async () => {
+    if (!isUnlocked) {
+      setGitUploadStatus('error');
+      setMessage('비밀번호 인증이 완료되지 않았습니다.');
+      return;
+    }
+    if (!exportCsv || !exportRange) return;
+    setGitUploadStatus('uploading');
+    const stockCode = dataSource.match(/\d+/)?.[0] || 'RANDOM';
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const fileName = `training_${stockCode}_${exportRange.from}_to_${exportRange.to}_${timestamp}.csv`;
+    const success = await directUploadToGithub(exportCsv, fileName);
+    if (success) {
+      setGitUploadStatus('success');
+      setMessage('GitHub에 업로드되었습니다.');
+    } else {
+      setGitUploadStatus('error');
+      setMessage('GitHub 업로드 실패');
+    }
   };
 
   const visibleTrades = useMemo(() => tradeLog.filter(t => t.idx >= (chartData[0]?.idx ?? 0) && t.action !== 'CANCEL'), [tradeLog, chartData]);
@@ -629,7 +798,7 @@ export default function TradingSimulator() {
             <p className="text-xs text-gray-500 font-mono mt-0.5">DAY {currentIndex + 1} / {allData.length} · {today.date}</p>
             <p className="text-[11px] text-gray-500 mt-0.5">데이터: <span className="text-gray-800 font-medium">{dataSource}</span></p>
           </div>
-          <div className="flex gap-2 flex-wrap">
+          <div className="flex gap-2 flex-wrap items-center">
             <button onClick={() => setShowDataPanel(v => !v)} className={s.btn}>데이터 입력</button>
             <button onClick={topUpCash} className="flex items-center gap-1 text-xs px-3 py-2 rounded border border-amber-400 text-amber-600 hover:bg-amber-50 transition-colors">💰 금액 충전</button>
             <button onClick={resetAll} className="flex items-center gap-1 text-xs px-3 py-2 rounded border border-gray-300 text-gray-600 hover:text-gray-900 hover:border-gray-400 transition-colors"><RotateCcw size={14} /> 초기화</button>
@@ -702,21 +871,59 @@ export default function TradingSimulator() {
           {/* 좌측 */}
           <div className="space-y-2">
             <div className="bg-white rounded-lg border border-gray-200 p-3">
-              {/* 줌 컨트롤 */}
+              {/* 줌 컨트롤 및 비밀번호 인증 배치 영역 */}
               <div className="flex items-center justify-between mb-2 flex-wrap gap-1">
-                <span className="text-[11px] text-gray-500 font-mono">표시: {Math.min(zoomDays, visible.length)}일 · 차트 우측 Y축 영역을 0.7초 꾹 누른 뒤 위/아래로 드래그하면 확대/축소</span>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button onClick={refreshChartOnly} className="flex items-center gap-1 text-[11px] px-2.5 py-1 rounded border border-emerald-400 bg-emerald-50 font-semibold text-emerald-700 hover:bg-emerald-100 transition-colors"><RotateCcw size={12} /> 새로고침 & 다음차트</button>
+                  
+                  {/* 자동 저장 결과 확인 배지 */}
+                  {autoSaveStatus && (
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono ${
+                      autoSaveStatus.includes('성공') ? 'bg-emerald-50 text-emerald-600 border border-emerald-200' :
+                      autoSaveStatus.includes('중') ? 'bg-amber-50 text-amber-600 border border-amber-200 animate-pulse' :
+                      'bg-gray-100 text-gray-500 border border-gray-200'
+                    }`}>
+                      {autoSaveStatus}
+                    </span>
+                  )}
+                </div>
+
                 <div className="flex items-center gap-1 flex-wrap">
-                  <button onClick={refreshChartOnly} title="보유 주식 전량 매도 후 차트만 새로고침" className="flex items-center gap-1 text-[11px] px-2 py-1 rounded border border-gray-300 text-gray-600 hover:text-gray-900 hover:border-gray-400 transition-colors"><ZoomIn size={12} /> 새로고침</button>
                   <button onClick={() => setZoomDays(z => Math.max(10, z - 10))} className="p-1.5 rounded border border-gray-300 text-gray-500 hover:text-gray-900 transition-colors"><ZoomOut size={13} /></button>
                   <button onClick={() => setZoomDays(z => Math.min(allData.length, z + 10))} className="p-1.5 rounded border border-gray-300 text-gray-500 hover:text-gray-900 transition-colors"><ZoomIn size={13} /></button>
                   {[60, 120, 250, 500].map(n => (
                     <button key={n} onClick={() => setZoomDays(n)} className={`text-[11px] px-2 py-1 rounded border ${zoomDays === n ? 'border-gray-700 text-gray-900 bg-gray-100' : 'border-gray-300 text-gray-500'} hover:text-gray-900 hover:border-gray-400 transition-colors`}>{n}일</button>
                   ))}
                   <button onClick={() => setZoomDays(allData.length)} className={`text-[11px] px-2 py-1 rounded border flex items-center gap-1 ${zoomDays >= allData.length ? 'border-gray-700 text-gray-900 bg-gray-100' : 'border-gray-300 text-gray-500'} hover:text-gray-900 hover:border-gray-400 transition-colors`}><Maximize2 size={11} /> 전체</button>
+                  
+                  {/* 전체 버튼 바로 오른쪽에 비밀번호 입력창/활성화창 고정 */}
+                  {!isUnlocked ? (
+                    <input
+                      type="password"
+                      placeholder="비밀번호(2420)"
+                      value={passwordInput}
+                      onChange={(e) => {
+                        setPasswordInput(e.target.value);
+                        if (e.target.value === '2420') {
+                          setIsUnlocked(true);
+                          const storage = getStorageApi();
+                          if (storage) {
+                            storage.set('sim_unlocked', 'true').catch(() => {});
+                          }
+                          setMessage('자동 저장이 활성화되었습니다.');
+                        }
+                      }}
+                      className="w-24 h-7 bg-white border border-gray-300 rounded px-2 text-xs outline-none focus:border-emerald-400"
+                    />
+                  ) : (
+                    <span className="text-[10px] font-mono font-semibold text-emerald-600 bg-emerald-50 border border-emerald-200 rounded px-2 py-1 select-none">
+                      🔑 자동저장 활성
+                    </span>
+                  )}
                 </div>
               </div>
 
-              {/* 캔들 차트 — 높이 242px (220의 10% 증가) */}
+              {/* 캔들 차트 */}
               <div style={{ position: 'relative' }}>
                 <ResponsiveContainer width="100%" height={242}>
                   <ComposedChart data={chartData} margin={{ top: 5, right: 70, left: 0, bottom: 0 }}>
@@ -753,9 +960,6 @@ export default function TradingSimulator() {
                   </ComposedChart>
                 </ResponsiveContainer>
 
-                {/* Y축 드래그 줌 오버레이: Y축 눈금이 그려지는 우측 영역(margin.right=70, axis.width=62)에
-                    투명 레이어를 얹어 press&drag 제스처를 안정적으로 캡쳐합니다.
-                    (recharts YAxis 컴포넌트에 직접 이벤트를 걸면 SVG 텍스트 선택과 충돌해 드래그가 안 먹는 문제가 있어 오버레이 방식으로 해결) */}
                 <div
                   onMouseDown={yAxisZoom.onPointerDown}
                   onMouseMove={yAxisZoom.onPointerMove}
@@ -782,7 +986,7 @@ export default function TradingSimulator() {
                 ))}
               </div>
 
-              {/* 시장가 매수/매도/다음날 버튼 — 아이콘 제거, 다음날 텍스트 제거 */}
+              {/* 시장가 매수/매도/다음날 버튼 */}
               <div className="flex flex-wrap items-center gap-1.5 mt-3">
                 <button onClick={() => placeMarketOrder('buy')} className="min-w-[80px] flex items-center justify-center bg-red-50 border border-red-400 text-red-600 rounded py-2 text-[13px] font-semibold hover:bg-red-100 transition-colors">
                   매수
@@ -790,12 +994,10 @@ export default function TradingSimulator() {
                 <button onClick={() => placeMarketOrder('sell')} className="min-w-[80px] flex items-center justify-center bg-blue-50 border border-blue-400 text-blue-600 rounded py-2 text-[13px] font-semibold hover:bg-blue-100 transition-colors">
                   매도
                 </button>
-                {/* 다음날 버튼: 텍스트 없이 ChevronRight 아이콘만 */}
                 <button onClick={() => advanceDays(1)} disabled={currentIndex + 1 >= allData.length}
                   className="flex items-center justify-center bg-emerald-50 border border-emerald-400 text-emerald-700 rounded py-2 px-3 text-sm font-semibold hover:bg-emerald-100 transition-colors disabled:opacity-40">
                   <ChevronRight size={16} />
                 </button>
-                {/* 3일 진행 */}
                 <button onClick={() => advanceDays(3)} disabled={currentIndex + 1 >= allData.length}
                   title="3일 진행 (다음날 버튼 3번과 동일)"
                   className="flex items-center justify-center gap-0.5 bg-emerald-50 border border-emerald-300 text-emerald-600 rounded py-2 px-2.5 text-xs font-semibold hover:bg-emerald-100 transition-colors disabled:opacity-40">
@@ -826,7 +1028,7 @@ export default function TradingSimulator() {
                 <div className="text-[10px] text-gray-400">시장가 체결 가격: <span className="text-gray-700 font-mono">{fmt(today.close)}원 (당일 종가)</span></div>
               </div>
 
-              {/* 예약(단일) 매수/매도 + 그리드 예약 */}
+              {/* 예약 주문 */}
               <div className="grid grid-cols-3 gap-2 mt-3">
                 <button onClick={() => placeLimitOrder('buy')} className="flex items-center justify-center bg-red-50 border border-red-300 text-red-600 rounded py-2 text-xs font-semibold hover:bg-red-100 transition-colors">예약 매수</button>
                 <button onClick={() => placeLimitOrder('sell')} className="flex items-center justify-center bg-blue-50 border border-blue-300 text-blue-600 rounded py-2 text-xs font-semibold hover:bg-blue-100 transition-colors">예약 매도</button>
@@ -962,7 +1164,35 @@ export default function TradingSimulator() {
               </div>
               <button onClick={() => setExportCsv(null)} className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-gray-300 text-gray-500 hover:text-gray-700 hover:border-gray-400 transition-colors"><X size={14} /> 닫기</button>
             </div>
-            <textarea ref={exportTextareaRef} readOnly value={exportCsv} onFocus={e => e.target.select()} className="flex-1 m-3 bg-gray-50 border border-gray-200 rounded p-2 text-[11px] font-mono text-gray-700 outline-none resize-none min-h-[200px]" />
+            
+            <textarea ref={exportTextareaRef} readOnly value={exportCsv} onFocus={e => e.target.select()} className="flex-1 m-3 bg-gray-50 border border-gray-200 rounded p-2 text-[11px] font-mono text-gray-700 outline-none resize-none min-h-[150px]" />
+
+            {/* GitHub 원격 업로드 영역 */}
+            <div className="border border-gray-200 rounded-lg p-3 mx-3 mb-3 bg-gray-50 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-gray-700">GitHub 원격 업로드 상태</span>
+                <span className="text-[10px] text-gray-400">연동 경로: {GITHUB_OWNER}/{GITHUB_REPO}</span>
+              </div>
+              {isUnlocked ? (
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <span className="text-[11px] text-emerald-600 bg-emerald-50 border border-emerald-200 rounded px-2 py-0.5">
+                    🔓 자동 저장 기능 활성화됨
+                  </span>
+                  <button
+                    onClick={manualUploadToGithub}
+                    disabled={gitUploadStatus === 'uploading'}
+                    className="text-xs px-3 py-1.5 rounded bg-blue-50 border border-blue-400 text-blue-700 hover:bg-blue-100 transition-colors font-semibold disabled:opacity-40"
+                  >
+                    {gitUploadStatus === 'uploading' ? '업로드 중...' : '원격으로 즉시 업로드'}
+                  </button>
+                </div>
+              ) : (
+                <p className="text-[11px] text-amber-600 leading-tight">
+                  자동 저장 기능을 활성화하려면 헤더의 인증 입력란에 유효한 비밀번호를 입력해야 합니다.
+                </p>
+              )}
+            </div>
+
             <div className="flex gap-2 px-3 pb-3">
               <button onClick={downloadExportCsv} className="flex-1 flex items-center justify-center gap-1 bg-emerald-50 border border-emerald-400 text-emerald-700 rounded py-2 text-sm font-semibold hover:bg-emerald-100 transition-colors"><Download size={14} /> CSV 다운로드</button>
               <button onClick={copyExportCsv} className="flex-1 text-sm py-2 rounded border border-gray-300 text-gray-600 hover:border-gray-400 transition-colors">클립보드에 복사</button>
