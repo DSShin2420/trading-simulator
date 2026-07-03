@@ -214,6 +214,14 @@ function useYAxisZoom(zoomDays, setZoomDays, allDataLength) {
 const START_CASH = 10_000_000;
 
 export default function TradingSimulator() {
+  useEffect(() => {
+    console.log('--- 환경변수 로드 확인 ---');
+    console.log('토큰 존재 여부:', import.meta.env.VITE_GITHUB_TOKEN ? 'O (성공)' : 'X (실패)');
+    if (import.meta.env.VITE_GITHUB_TOKEN) {
+      console.log('토큰 앞 4글자:', import.meta.env.VITE_GITHUB_TOKEN.slice(0, 4));
+    }
+  }, []);
+  
   const [isLoading, setIsLoading] = useState(true);
   const [loadStatus, setLoadStatus] = useState('데이터 불러오는 중...');
   const [githubDatasets, setGithubDatasets] = useState([]);
@@ -256,15 +264,16 @@ export default function TradingSimulator() {
   const [isUnlocked, setIsUnlocked] = useState(false);
   const [passwordInput, setPasswordInput] = useState('');
   const [gitUploadStatus, setGitUploadStatus] = useState('idle');
-  const [autoSaveStatus, setAutoSaveStatus] = useState(''); // 자동 저장 상태 알림창용
+  const [autoSaveStatus, setAutoSaveStatus] = useState(''); // 자동 저장 상태 알림용
 
-  // VITE 환경변수 로딩 및 고정 설정 상수
+  // .env 파일로부터 안전하게 VITE 환경변수 로딩
   const GITHUB_TOKEN = import.meta.env.VITE_GITHUB_TOKEN || '';
   const GITHUB_OWNER = 'dsshin2420';
   const GITHUB_REPO = 'trading-simulator';
   const GITHUB_BRANCH = 'main';
   const GITHUB_PATH = 'training-data';
 
+  
   useEffect(() => {
     (async () => {
       const storage = getStorageApi();
@@ -539,7 +548,7 @@ export default function TradingSimulator() {
     setPendingOrders([]); return finalCash;
   };
 
-  // ---------- CSV 데이터 가공 (종목 코드, 이번차트 최종 수익률 컬럼 추가) ----------
+  // ---------- CSV 데이터 가공 ----------
   const generateExportCsvData = (logs, dataList, srcName, returnPctVal) => {
     const validTrades = logs.filter(t => t.action !== 'CANCEL');
     if (!validTrades.length) return null;
@@ -588,11 +597,11 @@ export default function TradingSimulator() {
     };
   };
 
-  // ---------- GitHub API 직접 백그라운드 PUT 업로드 ----------
+  // ---------- GitHub API PUT 전송 (상세 에러 출력 보완) ----------
   const directUploadToGithub = async (csvContent, fileName) => {
     try {
       if (!GITHUB_TOKEN) {
-        console.warn('VITE_GITHUB_TOKEN 환경 변수가 누락되었습니다.');
+        console.error('VITE_GITHUB_TOKEN이 존재하지 않거나 로드되지 않았습니다. .env 설정과 npm run dev 재시작 여부를 확인해 주세요.');
         return false;
       }
       const cleanPath = GITHUB_PATH.replace(/\/+$/, '');
@@ -621,27 +630,38 @@ export default function TradingSimulator() {
         })
       });
 
-      return response.ok;
+      if (!response.ok) {
+        const errorDetail = await response.json().catch(() => ({}));
+        console.error('GitHub API 에러 세부사항:', {
+          status: response.status,
+          statusText: response.statusText,
+          responseBody: errorDetail
+        });
+        return false;
+      }
+
+      return true;
     } catch (err) {
-      console.error('Git upload error:', err);
+      console.error('GitHub 연결 오류 발생:', err);
       return false;
     }
   };
 
-  // ---------- [자동 업로드] 매매기록 상태 확인 후 순차 동기화 업로드 및 차트 초기화 ----------
+  // ---------- [자동 업로드] 새로고침 및 다음차트 연동 ----------
   const refreshChartOnly = async () => {
     setMessage(null);
     setAutoSaveStatus('');
 
     const validTrades = tradeLog.filter(t => t.action !== 'CANCEL');
     
-    // 1. 비밀번호가 설정(잠금해제)되었고 매매기록이 존재할 때
+    // 1. 비밀번호인증이 활성화되어 있고 매매기록이 있는 경우
     if (isUnlocked) {
       if (validTrades.length > 0) {
         setAutoSaveStatus('저장 중...');
+        // 비동기 처리 전 상태 데이터 보존을 위해 먼저 추출
         const exportData = generateExportCsvData(tradeLog, allData, dataSource, chartReturnPct);
         if (exportData) {
-          // 비동기 업로드를 확실히 끝내고 다음 종목으로 넘어가도록 await 강제
+          // 비동기 업로드 동기식 대기
           const success = await directUploadToGithub(exportData.csv, exportData.fileName);
           if (success) {
             setAutoSaveStatus('자동저장 성공');
@@ -651,13 +671,13 @@ export default function TradingSimulator() {
           }
         }
       } else {
-        setAutoSaveStatus('매매기록 없음');
+        setAutoSaveStatus('기록 없음 (저장 생략)');
       }
     } else {
-      setAutoSaveStatus('잠금상태');
+      setAutoSaveStatus('잠금상태 (저장 안 됨)');
     }
 
-    // 2. 이후 안전하게 청산 후 다음 차트 로드 진행
+    // 2. 이후 청산 및 다음 차트 로드 진행
     const snapshot = liquidateHoldings();
     const pool = [...githubDatasets, ...customDatasets];
     if (!pool.length) { applyDataset(generateData(300), '랜덤 데이터', true, snapshot); return; }
@@ -732,20 +752,6 @@ export default function TradingSimulator() {
     try { const ta = exportTextareaRef.current; if (ta) { ta.focus(); ta.select(); if (document.execCommand('copy')) { setMessage('클립보드에 복사했습니다.'); return; } } } catch {}
     setMessage('자동 복사 실패. Ctrl+C로 복사해주세요.');
     exportTextareaRef.current?.focus(); exportTextareaRef.current?.select();
-  };
-
-  const handlePasswordSubmit = async () => {
-    if (passwordInput === '2420') {
-      setIsUnlocked(true);
-      const storage = getStorageApi();
-      if (storage) {
-        try { await storage.set('sim_unlocked', 'true'); } catch {}
-      }
-      setMessage('자동 저장이 활성화되었습니다.');
-    } else {
-      setMessage('비밀번호가 일치하지 않습니다.');
-    }
-    setPasswordInput('');
   };
 
   const manualUploadToGithub = async () => {
@@ -1210,4 +1216,3 @@ export default function TradingSimulator() {
     </div>
   );
 }
-//test
