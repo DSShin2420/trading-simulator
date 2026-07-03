@@ -258,7 +258,7 @@ export default function TradingSimulator() {
   const [gitUploadStatus, setGitUploadStatus] = useState('idle');
   const [autoSaveStatus, setAutoSaveStatus] = useState(''); // 자동 저장 상태 알림용
 
-  // .env 파일로부터 안전하게 VITE 환경변수 로딩
+  // .env 파일 혹은 LocalStorage 환경변수 로딩용 통합 상태
   const [githubToken, setGithubToken] = useState(() => {
     return import.meta.env.VITE_GITHUB_TOKEN || '';
   });
@@ -267,12 +267,6 @@ export default function TradingSimulator() {
   const GITHUB_REPO = 'trading-simulator';
   const GITHUB_BRANCH = 'main';
   const GITHUB_PATH = 'training-data';
-
-  // 디버그 로깅 및 상태 체크
-  useEffect(() => {
-    console.log('--- 환경변수 로드 확인 ---');
-    console.log('기본 토큰 로드 여부:', githubToken ? 'O (성공)' : 'X (로컬 로드 실패 - 브라우저 인증 대기)');
-  }, [githubToken]);
 
   useEffect(() => {
     (async () => {
@@ -667,6 +661,7 @@ export default function TradingSimulator() {
         setAutoSaveStatus('저장 중...');
         const exportData = generateExportCsvData(tradeLog, allData, dataSource, chartReturnPct);
         if (exportData) {
+          // 비동기 업로드를 확실히 끝내고 다음 종목으로 넘어가도록 await 강제
           const success = await directUploadToGithub(exportData.csv, exportData.fileName);
           if (success) {
             setAutoSaveStatus('자동저장 성공');
@@ -968,8 +963,22 @@ export default function TradingSimulator() {
                       className="w-24 h-7 bg-white border border-gray-300 rounded px-2 text-xs outline-none focus:border-emerald-400"
                     />
                   ) : (
-                    <span className="text-[10px] font-mono font-semibold text-emerald-600 bg-emerald-50 border border-emerald-200 rounded px-2 py-1 select-none">
-                      🔑 자동저장 활성
+                    /* 잠금 해제 상태일 때 배지를 클릭하면 인증 상태가 안전하게 초기화되어 입력창이 다시 뜹니다 */
+                    <span 
+                      onClick={async () => {
+                        const storage = getStorageApi();
+                        if (storage) {
+                          await storage.delete('sim_unlocked');
+                          await storage.delete('git_token_custom');
+                        }
+                        setIsUnlocked(false);
+                        setGithubToken(import.meta.env.VITE_GITHUB_TOKEN || '');
+                        setMessage('인증이 초기화되었습니다. 새로운 토큰이나 코드를 입력할 수 있습니다.');
+                      }}
+                      className="text-[10px] font-mono font-semibold text-emerald-600 bg-emerald-50 border border-emerald-200 rounded px-2 py-1 select-none cursor-pointer hover:bg-emerald-100 transition-colors"
+                      title="클릭 시 인증 초기화 및 토큰 변경"
+                    >
+                      🔑 자동저장 활성 (변경)
                     </span>
                   )}
                 </div>
