@@ -1267,3 +1267,4 @@ export default function TradingSimulator() {
     </div>
   );
 }
+//It is difficult
