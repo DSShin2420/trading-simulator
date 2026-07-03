@@ -1210,3 +1210,4 @@ export default function TradingSimulator() {
     </div>
   );
 }
+//test
