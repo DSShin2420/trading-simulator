@@ -214,14 +214,6 @@ function useYAxisZoom(zoomDays, setZoomDays, allDataLength) {
 const START_CASH = 10_000_000;
 
 export default function TradingSimulator() {
-  useEffect(() => {
-    console.log('--- 환경변수 로드 확인 ---');
-    console.log('토큰 존재 여부:', import.meta.env.VITE_GITHUB_TOKEN ? 'O (성공)' : 'X (실패)');
-    if (import.meta.env.VITE_GITHUB_TOKEN) {
-      console.log('토큰 앞 4글자:', import.meta.env.VITE_GITHUB_TOKEN.slice(0, 4));
-    }
-  }, []);
-  
   const [isLoading, setIsLoading] = useState(true);
   const [loadStatus, setLoadStatus] = useState('데이터 불러오는 중...');
   const [githubDatasets, setGithubDatasets] = useState([]);
@@ -267,13 +259,21 @@ export default function TradingSimulator() {
   const [autoSaveStatus, setAutoSaveStatus] = useState(''); // 자동 저장 상태 알림용
 
   // .env 파일로부터 안전하게 VITE 환경변수 로딩
-  const GITHUB_TOKEN = import.meta.env.VITE_GITHUB_TOKEN || '';
+  const [githubToken, setGithubToken] = useState(() => {
+    return import.meta.env.VITE_GITHUB_TOKEN || '';
+  });
+
   const GITHUB_OWNER = 'dsshin2420';
   const GITHUB_REPO = 'trading-simulator';
   const GITHUB_BRANCH = 'main';
   const GITHUB_PATH = 'training-data';
 
-  
+  // 디버그 로깅 및 상태 체크
+  useEffect(() => {
+    console.log('--- 환경변수 로드 확인 ---');
+    console.log('기본 토큰 로드 여부:', githubToken ? 'O (성공)' : 'X (로컬 로드 실패 - 브라우저 인증 대기)');
+  }, [githubToken]);
+
   useEffect(() => {
     (async () => {
       const storage = getStorageApi();
@@ -290,12 +290,19 @@ export default function TradingSimulator() {
         }
       } catch (err) { console.warn('캐시 복원 실패:', err); }
 
-      // 자동 잠금해제 상태 복원
+      // 브라우저 저장소에서 토큰 및 자동 잠금해제 상태 복원 (★핵심: 최초 1번 저장 시 평생 유지)
       if (storage) {
         try {
-          const unlockedCached = await storage.get('sim_unlocked');
-          if (unlockedCached && unlockedCached.value === 'true') {
+          const cachedToken = await storage.get('git_token_custom');
+          if (cachedToken && cachedToken.value) {
+            setGithubToken(cachedToken.value);
             setIsUnlocked(true);
+            console.log('브라우저에 보관된 사용자 개인 토큰 로드 성공');
+          } else {
+            const unlockedCached = await storage.get('sim_unlocked');
+            if (unlockedCached && unlockedCached.value === 'true') {
+              setIsUnlocked(true);
+            }
           }
         } catch (e) { console.warn('설정 불러오기 실패:', e); }
       }
@@ -548,7 +555,7 @@ export default function TradingSimulator() {
     setPendingOrders([]); return finalCash;
   };
 
-  // ---------- CSV 데이터 가공 ----------
+  // ---------- CSV 데이터 가공 (종목 코드, 이번차트 최종 수익률 컬럼 추가) ----------
   const generateExportCsvData = (logs, dataList, srcName, returnPctVal) => {
     const validTrades = logs.filter(t => t.action !== 'CANCEL');
     if (!validTrades.length) return null;
@@ -597,11 +604,11 @@ export default function TradingSimulator() {
     };
   };
 
-  // ---------- GitHub API PUT 전송 (상세 에러 출력 보완) ----------
+  // ---------- GitHub API 직접 백그라운드 PUT 업로드 ----------
   const directUploadToGithub = async (csvContent, fileName) => {
     try {
-      if (!GITHUB_TOKEN) {
-        console.error('VITE_GITHUB_TOKEN이 존재하지 않거나 로드되지 않았습니다. .env 설정과 npm run dev 재시작 여부를 확인해 주세요.');
+      if (!githubToken) {
+        console.error('GitHub 토큰이 유효하지 않거나 로드되지 않았습니다.');
         return false;
       }
       const cleanPath = GITHUB_PATH.replace(/\/+$/, '');
@@ -619,7 +626,7 @@ export default function TradingSimulator() {
       const response = await fetch(url, {
         method: 'PUT',
         headers: {
-          'Authorization': `Bearer ${GITHUB_TOKEN}`,
+          'Authorization': `Bearer ${githubToken}`,
           'Accept': 'application/vnd.github+json',
           'Content-Type': 'application/json'
         },
@@ -658,10 +665,8 @@ export default function TradingSimulator() {
     if (isUnlocked) {
       if (validTrades.length > 0) {
         setAutoSaveStatus('저장 중...');
-        // 비동기 처리 전 상태 데이터 보존을 위해 먼저 추출
         const exportData = generateExportCsvData(tradeLog, allData, dataSource, chartReturnPct);
         if (exportData) {
-          // 비동기 업로드 동기식 대기
           const success = await directUploadToGithub(exportData.csv, exportData.fileName);
           if (success) {
             setAutoSaveStatus('자동저장 성공');
@@ -671,7 +676,7 @@ export default function TradingSimulator() {
           }
         }
       } else {
-        setAutoSaveStatus('기록 없음 (저장 생략)');
+        setAutoSaveStatus('매매기록 없음');
       }
     } else {
       setAutoSaveStatus('잠금상태 (저장 안 됨)');
@@ -752,6 +757,31 @@ export default function TradingSimulator() {
     try { const ta = exportTextareaRef.current; if (ta) { ta.focus(); ta.select(); if (document.execCommand('copy')) { setMessage('클립보드에 복사했습니다.'); return; } } } catch {}
     setMessage('자동 복사 실패. Ctrl+C로 복사해주세요.');
     exportTextareaRef.current?.focus(); exportTextareaRef.current?.select();
+  };
+
+  const handlePasswordSubmit = async () => {
+    if (passwordInput === '2420') {
+      setIsUnlocked(true);
+      const storage = getStorageApi();
+      if (storage) {
+        try { await storage.set('sim_unlocked', 'true'); } catch {}
+      }
+      setMessage('자동 저장이 활성화되었습니다.');
+    } else if (passwordInput.startsWith('ghp_')) {
+      setIsUnlocked(true);
+      setGithubToken(passwordInput);
+      const storage = getStorageApi();
+      if (storage) {
+        try {
+          await storage.set('sim_unlocked', 'true');
+          await storage.set('git_token_custom', passwordInput);
+        } catch {}
+      }
+      setMessage('개인 GitHub 토큰이 브라우저에 안전하게 저장되었습니다 (최초 1회 입력 유지).');
+    } else {
+      setMessage('비밀번호가 일치하지 않습니다.');
+    }
+    setPasswordInput('');
   };
 
   const manualUploadToGithub = async () => {
@@ -906,21 +936,33 @@ export default function TradingSimulator() {
                   ))}
                   <button onClick={() => setZoomDays(allData.length)} className={`text-[11px] px-2 py-1 rounded border flex items-center gap-1 ${zoomDays >= allData.length ? 'border-gray-700 text-gray-900 bg-gray-100' : 'border-gray-300 text-gray-500'} hover:text-gray-900 hover:border-gray-400 transition-colors`}><Maximize2 size={11} /> 전체</button>
                   
-                  {/* 전체 버튼 바로 오른쪽에 비밀번호 입력창/활성화창 고정 */}
+                  {/* 비밀번호(2420) 또는 개인 토큰(ghp_...) 입력란 */}
                   {!isUnlocked ? (
                     <input
                       type="password"
-                      placeholder="비밀번호(2420)"
+                      placeholder="인증코드 입력"
                       value={passwordInput}
                       onChange={(e) => {
-                        setPasswordInput(e.target.value);
-                        if (e.target.value === '2420') {
+                        const val = e.target.value;
+                        setPasswordInput(val);
+                        if (val === '2420') {
                           setIsUnlocked(true);
                           const storage = getStorageApi();
                           if (storage) {
                             storage.set('sim_unlocked', 'true').catch(() => {});
                           }
                           setMessage('자동 저장이 활성화되었습니다.');
+                          setPasswordInput('');
+                        } else if (val.startsWith('ghp_')) {
+                          setIsUnlocked(true);
+                          setGithubToken(val);
+                          const storage = getStorageApi();
+                          if (storage) {
+                            storage.set('sim_unlocked', 'true').catch(() => {});
+                            storage.set('git_token_custom', val).catch(() => {});
+                          }
+                          setMessage('개인 GitHub 토큰이 브라우저에 안전하게 보관되었습니다 (최초 1회 등록 유지).');
+                          setPasswordInput('');
                         }
                       }}
                       className="w-24 h-7 bg-white border border-gray-300 rounded px-2 text-xs outline-none focus:border-emerald-400"
