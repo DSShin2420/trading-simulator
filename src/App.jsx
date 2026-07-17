@@ -505,33 +505,45 @@ export default function TradingSimulator() {
     if (stepsRun < n) setMessage(`마지막 날짜에 도달해 ${stepsRun}일만 진행했습니다.`);
   };
 
-  // ---------- 키보드 단축키 이벤트 리스너 추가 ----------
+  // ---------- 키보드 단축키 이벤트 리스너 및 콘솔 디버깅 ----------
   useEffect(() => {
+    console.log("[Shortcut System] 단축키 감지 리스너가 등록되었습니다.");
+
     const handleKeyDown = (e) => {
-      // 입력창이나 텍스트 영역에 포커스가 있을 때는 단축키 동작을 제외합니다.
-      if (
-        document.activeElement &&
-        (document.activeElement.tagName === 'INPUT' ||
-         document.activeElement.tagName === 'TEXTAREA' ||
-         document.activeElement.isContentEditable)
-      ) {
+      // 1. 눌린 키 정보 로깅
+      console.log(`[Shortcut System] Key pressed: key='${e.key}', code='${e.code}'`);
+
+      // 2. 입력창 활성화 여부 확인
+      const isInputActive = document.activeElement && (
+        document.activeElement.tagName === 'INPUT' ||
+        document.activeElement.tagName === 'TEXTAREA' ||
+        document.activeElement.isContentEditable
+      );
+
+      if (isInputActive) {
+        console.log(`[Shortcut System] 입력 중이므로 단축키 '${e.key}' 감지를 무시합니다.`);
         return;
       }
 
+      // 3. 키 매핑 처리
       if (e.key === 'ArrowRight') {
         e.preventDefault();
+        console.log("[Shortcut System] ▶ ArrowRight 감지: advanceDays(1) 실행");
         advanceDays(1);
       } else if (e.key === '+' || e.key === '=' || e.code === 'NumpadAdd') {
         e.preventDefault();
+        console.log("[Shortcut System] 🔴 +/= 감지: Market BUY 실행");
         placeMarketOrder('buy');
       } else if (e.key === '-' || e.code === 'NumpadSubtract') {
         e.preventDefault();
+        console.log("[Shortcut System] 🔵 - 감지: Market SELL 실행");
         placeMarketOrder('sell');
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => {
+      console.log("[Shortcut System] 기존 단축키 감지 리스너가 해제되었습니다.");
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [advanceDays, placeMarketOrder]);
