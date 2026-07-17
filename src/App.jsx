@@ -1,14 +1,8 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 
 // ---------- [폴더 경로 분리 설정] ----------
-const GITHUB_OWNER = 'dsshin2420';
-const GITHUB_REPO = 'trading-simulator';
-const GITHUB_BRANCH = 'main';
-
-const GITHUB_CHART_PATH = 'Chart_data'; // 원본 주식 CSV 차트 파일들이 담기는 폴더
+const GITHUB_CHART_PATH = 'Chart_data'; // 원본 주식 CSV 차트 파일들이 담긴 폴더
 const GITHUB_LOG_PATH = 'training-data';  // 내 매매 기록(학습 로그) CSV가 저장되는 폴더
-
-const CACHE_KEY = 'trading_sim_github_file_list_v2';
 
 const getStorageApi = () => {
   if (typeof window === 'undefined') return null;
@@ -188,8 +182,6 @@ const START_CASH = 10_000_000;
 export default function TradingSimulator() {
   const [isLoading, setIsLoading] = useState(true);
   const [loadStatus, setLoadStatus] = useState('데이터 불러오는 중...');
-  
-  // 깃허브에서 스캔한 전체 파일 메타데이터 목록
   const [githubFileList, setGithubFileList] = useState([]);
   
   const [allData, setAllData] = useState(() => generateData(300));
@@ -237,7 +229,7 @@ export default function TradingSimulator() {
     return import.meta.env.VITE_GITHUB_TOKEN || '';
   });
 
-  // ---------- [핵심 변경] 차트 CSV를 백그라운드에서 다운로드 (isSilent가 true이면 전체화면 로딩 제거) ----------
+  // ---------- [변경] 정적 파일 직접 호출 (인증 불필요) ----------
   const fetchAndApplyCSV = async (fileObj, keepAccount = false, snapshot = START_CASH, isSilent = false) => {
     if (!isSilent) {
       setIsLoading(true);
@@ -261,18 +253,16 @@ export default function TradingSimulator() {
     }
   };
 
-  // ---------- 초기 깃허브 Chart_data 폴더 목록 스캔 ----------
+  // ---------- [변경] file_list.json 정적 파일을 통한 무제한 감지 ----------
   useEffect(() => {
     (async () => {
       const storage = getStorageApi();
-      let activeToken = githubToken;
 
       if (storage) {
         try {
           const cachedToken = await storage.get('git_token_custom');
           if (cachedToken && cachedToken.value) {
             setGithubToken(cachedToken.value);
-            activeToken = cachedToken.value;
             setIsUnlocked(true);
           } else {
             const unlockedCached = await storage.get('sim_unlocked');
@@ -283,33 +273,29 @@ export default function TradingSimulator() {
         } catch (e) { console.warn('설정 불러오기 실패:', e); }
       }
 
-      setLoadStatus('깃허브 차트 데이터 폴더 스캔 중...');
+      setLoadStatus('차트 목록 불러오는 중...');
       try {
-        const headers = {};
-        if (activeToken) {
-          headers['Authorization'] = `Bearer ${activeToken}`;
-        }
+        // 상대 경로로 file_list.json 호출 (로컬 및 실서버 공통 적용)
+        const listUrl = `./${GITHUB_CHART_PATH}/file_list.json`;
+        const res = await fetch(listUrl);
+        if (!res.ok) throw new Error('file_list.json 파일을 읽을 수 없습니다.');
         
-        const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${GITHUB_CHART_PATH}?ref=${GITHUB_BRANCH}`;
-        const res = await fetch(url, { headers });
-        if (!res.ok) throw new Error(`HTTP ${res.status} — 차트 폴더(Chart_data) 확인 불가`);
+        const fileNames = await res.json();
         
-        const contents = await res.json();
-        const files = contents.filter(item => item.type === 'file' && /\.(csv|txt)$/i.test(item.name));
-        
-        if (files.length === 0) {
-          throw new Error('Chart_data 폴더 안에 주식 CSV 파일이 존재하지 않습니다.');
-        }
+        // 정적 파일 URL 매핑 (인증 없는 CDN 형태의 download_url 구성)
+        const files = fileNames.map(name => ({
+          name,
+          download_url: `./${GITHUB_CHART_PATH}/${name}`
+        }));
 
         setGithubFileList(files);
         
-        // 첫 시작 시 수많은 파일 중 무작위로 하나 골라 로딩 (최초 로딩이므로 로딩 화면 띄움)
         const pick = files[Math.floor(Math.random() * files.length)];
         await fetchAndApplyCSV(pick, false, START_CASH, false);
 
       } catch (err) {
-        console.warn('깃허브 자동스캔 실패, 로컬 랜덤 차트로 시작합니다.', err.message);
-        setLoadStatus(`목록 갱신 실패 (${err.message})`);
+        console.warn('정적 목록 로드 실패, 로컬 랜덤 차트로 시작합니다.', err.message);
+        setLoadStatus(`차트 목록 갱신 실패 (${err.message})`);
         const d = generateData(300); 
         const start = randomStart(d.length);
         setAllData(d); 
@@ -549,7 +535,6 @@ export default function TradingSimulator() {
     setMessage(null);
     if (githubFileList.length > 0) {
       const pick = githubFileList[Math.floor(Math.random() * githubFileList.length)];
-      // 리셋 시에도 조용히(isSilent = true) 불러옴
       fetchAndApplyCSV(pick, false, START_CASH, true);
     } else {
       applyDataset(generateData(300), '랜덤 데이터');
@@ -661,7 +646,7 @@ export default function TradingSimulator() {
     }
   };
 
-  // ---------- [자동 업로드] 새로고침 및 다음차트 연동 (Silent로 호출) ----------
+  // ---------- [자동 업로드] 새로고침 및 다음차트 연동 ----------
   const refreshChartOnly = async () => {
     setMessage(null);
     setAutoSaveStatus('');
@@ -690,7 +675,6 @@ export default function TradingSimulator() {
 
     const snapshot = liquidateHoldings();
     
-    // 차트를 불러올 때 isSilent = true 를 넘겨 화면 깜빡임 차단
     if (githubFileList.length > 0) {
       const pick = githubFileList[Math.floor(Math.random() * githubFileList.length)];
       await fetchAndApplyCSV(pick, true, snapshot, true); 
@@ -859,7 +843,6 @@ export default function TradingSimulator() {
               <div className="flex items-center justify-between">
                 <p className="text-[11px] text-gray-700 font-semibold">📦 기본 데이터 ({githubFileList.length}종목)</p>
                 <div className="flex gap-2">
-                  {/* 사이드바 리스트에서 임의 선택 시에도 비동기 무음(isSilent) 로드 적용 */}
                   <button onClick={() => { if (!githubFileList.length) return; const pick = githubFileList[Math.floor(Math.random() * githubFileList.length)]; fetchAndApplyCSV(pick, false, START_CASH, true); setShowDataPanel(false); }} className="text-[10px] px-2 py-0.5 rounded border border-emerald-400 text-emerald-600 hover:bg-emerald-50 transition-colors">🎲 랜덤 선택</button>
                 </div>
               </div>
