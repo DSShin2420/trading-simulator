@@ -1,8 +1,13 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 
-// ---------- [폴더 경로 분리 설정] ----------
+// ---------- [전역 환경 설정 상수] ----------
+const GITHUB_OWNER = 'DSShin2420';      // 대소문자 맞춘 사용자 깃허브 아이디
+const GITHUB_REPO = 'trading-simulator';
+const GITHUB_BRANCH = 'main';
 const GITHUB_CHART_PATH = 'Chart_data'; // 원본 주식 CSV 차트 파일들이 담긴 폴더
 const GITHUB_LOG_PATH = 'training-data';  // 내 매매 기록(학습 로그) CSV가 저장되는 폴더
+
+const CACHE_KEY = 'trading_sim_github_file_list_v2';
 
 const getStorageApi = () => {
   if (typeof window === 'undefined') return null;
@@ -229,7 +234,7 @@ export default function TradingSimulator() {
     return import.meta.env.VITE_GITHUB_TOKEN || '';
   });
 
-  // ---------- [변경] 정적 파일 직접 호출 (인증 불필요) ----------
+  // ---------- 정적 파일 직접 호출 (인증 불필요) ----------
   const fetchAndApplyCSV = async (fileObj, keepAccount = false, snapshot = START_CASH, isSilent = false) => {
     if (!isSilent) {
       setIsLoading(true);
@@ -253,7 +258,7 @@ export default function TradingSimulator() {
     }
   };
 
-  // ---------- [변경] file_list.json 정적 파일을 통한 무제한 감지 ----------
+  // ---------- file_list.json 정적 파일을 통한 무제한 감지 ----------
   useEffect(() => {
     (async () => {
       const storage = getStorageApi();
@@ -275,14 +280,12 @@ export default function TradingSimulator() {
 
       setLoadStatus('차트 목록 불러오는 중...');
       try {
-        // 상대 경로로 file_list.json 호출 (로컬 및 실서버 공통 적용)
         const listUrl = `./${GITHUB_CHART_PATH}/file_list.json`;
         const res = await fetch(listUrl);
         if (!res.ok) throw new Error('file_list.json 파일을 읽을 수 없습니다.');
         
         const fileNames = await res.json();
         
-        // 정적 파일 URL 매핑 (인증 없는 CDN 형태의 download_url 구성)
         const files = fileNames.map(name => ({
           name,
           download_url: `./${GITHUB_CHART_PATH}/${name}`
