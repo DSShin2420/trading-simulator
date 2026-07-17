@@ -505,6 +505,37 @@ export default function TradingSimulator() {
     if (stepsRun < n) setMessage(`마지막 날짜에 도달해 ${stepsRun}일만 진행했습니다.`);
   };
 
+  // ---------- 키보드 단축키 이벤트 리스너 추가 ----------
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // 입력창이나 텍스트 영역에 포커스가 있을 때는 단축키 동작을 제외합니다.
+      if (
+        document.activeElement &&
+        (document.activeElement.tagName === 'INPUT' ||
+         document.activeElement.tagName === 'TEXTAREA' ||
+         document.activeElement.isContentEditable)
+      ) {
+        return;
+      }
+
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        advanceDays(1);
+      } else if (e.key === '+' || e.key === '=' || e.code === 'NumpadAdd') {
+        e.preventDefault();
+        placeMarketOrder('buy');
+      } else if (e.key === '-' || e.code === 'NumpadSubtract') {
+        e.preventDefault();
+        placeMarketOrder('sell');
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [advanceDays, placeMarketOrder]);
+
   const applyDataset = (data, name, keepAccount = false, chartStartSnapshot = START_CASH) => {
     const start = randomStart(data.length);
     setAllData(data); setDataSource(name); setCurrentIndex(start);
@@ -1267,4 +1298,3 @@ export default function TradingSimulator() {
     </div>
   );
 }
-//It is difficult
