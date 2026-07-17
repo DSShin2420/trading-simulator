@@ -1,8 +1,14 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 
-// ---------- 기본 데이터: GitHub Pages에서 자동 로드 ----------
-const AUTO_LOAD_ZIP_URL = 'https://dsshin2420.github.io/trading-simulator/KOSDAQ_Kospi_50.zip';
-const CACHE_KEY = 'trading_sim_github_zip_v1';
+// ---------- [폴더 경로 분리 설정] ----------
+const GITHUB_OWNER = 'dsshin2420';
+const GITHUB_REPO = 'trading-simulator';
+const GITHUB_BRANCH = 'main';
+
+const GITHUB_CHART_PATH = 'Chart_data'; // 원본 주식 CSV 차트 파일들이 담기는 폴더
+const GITHUB_LOG_PATH = 'training-data';  // 내 매매 기록(학습 로그) CSV가 저장되는 폴더
+
+const CACHE_KEY = 'trading_sim_github_file_list_v2';
 
 const getStorageApi = () => {
   if (typeof window === 'undefined') return null;
@@ -21,7 +27,7 @@ import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, BarChart, ReferenceDot, ReferenceLine
 } from 'recharts';
-import { ChevronRight, RotateCcw, Download, X, Clock, ZoomIn, ZoomOut, Maximize2, Upload, Settings } from 'lucide-react';
+import { ChevronRight, RotateCcw, Download, X, Clock, ZoomIn, ZoomOut, Maximize2, Upload } from 'lucide-react';
 
 function generateData(days) {
   const data = [];
@@ -82,40 +88,6 @@ function parseCustomData(text) {
   data.sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
   data.forEach((d, i) => { d.idx = i; });
   return data;
-}
-
-function listZipEntries(buffer) {
-  const view = new DataView(buffer), bytes = new Uint8Array(buffer);
-  let eocd = -1;
-  for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 22 - 65535); i--) { if (view.getUint32(i, true) === 0x06054b50) { eocd = i; break; } }
-  if (eocd < 0) throw new Error('ZIP 형식 오류');
-  const entryCount = view.getUint16(eocd + 10, true);
-  let offset = view.getUint32(eocd + 16, true);
-  const entries = [];
-  for (let i = 0; i < entryCount; i++) {
-    if (view.getUint32(offset, true) !== 0x02014b50) break;
-    const compMethod = view.getUint16(offset + 10, true), compSize = view.getUint32(offset + 20, true), uncompSize = view.getUint32(offset + 24, true);
-    const nameLen = view.getUint16(offset + 28, true), extraLen = view.getUint16(offset + 30, true), commentLen = view.getUint16(offset + 32, true);
-    const lfhOffset = view.getUint32(offset + 42, true);
-    const name = new TextDecoder('utf-8').decode(bytes.slice(offset + 46, offset + 46 + nameLen));
-    entries.push({ name, compMethod, compSize, uncompSize, lfhOffset });
-    offset += 46 + nameLen + extraLen + commentLen;
-  }
-  return entries;
-}
-
-async function getZipEntryText(buffer, entry) {
-  const view = new DataView(buffer), bytes = new Uint8Array(buffer);
-  const lfh = entry.lfhOffset, nameLen = view.getUint16(lfh + 26, true), extraLen = view.getUint16(lfh + 28, true);
-  const compData = bytes.slice(lfh + 30 + nameLen + extraLen, lfh + 30 + nameLen + extraLen + entry.compSize);
-  let outBytes;
-  if (entry.compMethod === 0) { outBytes = compData; }
-  else if (entry.compMethod === 8) {
-    if (typeof DecompressionStream === 'undefined') throw new Error('ZIP 압축 해제 미지원');
-    const ds = new DecompressionStream('deflate-raw');
-    outBytes = new Uint8Array(await new Response(new Blob([compData]).stream().pipeThrough(ds)).arrayBuffer());
-  } else throw new Error(`미지원 압축 방식 ${entry.compMethod}`);
-  return new TextDecoder('utf-8').decode(outBytes);
 }
 
 const randomStart = (len) => {
@@ -216,7 +188,10 @@ const START_CASH = 10_000_000;
 export default function TradingSimulator() {
   const [isLoading, setIsLoading] = useState(true);
   const [loadStatus, setLoadStatus] = useState('데이터 불러오는 중...');
-  const [githubDatasets, setGithubDatasets] = useState([]);
+  
+  // 깃허브에서 스캔한 전체 파일 메타데이터 목록
+  const [githubFileList, setGithubFileList] = useState([]);
+  
   const [allData, setAllData] = useState(() => generateData(300));
   const [dataSource, setDataSource] = useState('랜덤 데이터');
   const [csvText, setCsvText] = useState('');
@@ -256,42 +231,49 @@ export default function TradingSimulator() {
   const [isUnlocked, setIsUnlocked] = useState(false);
   const [passwordInput, setPasswordInput] = useState('');
   const [gitUploadStatus, setGitUploadStatus] = useState('idle');
-  const [autoSaveStatus, setAutoSaveStatus] = useState(''); // 자동 저장 상태 알림용
+  const [autoSaveStatus, setAutoSaveStatus] = useState(''); 
 
-  // .env 파일 혹은 LocalStorage 환경변수 로딩용 통합 상태
   const [githubToken, setGithubToken] = useState(() => {
     return import.meta.env.VITE_GITHUB_TOKEN || '';
   });
 
-  const GITHUB_OWNER = 'dsshin2420';
-  const GITHUB_REPO = 'trading-simulator';
-  const GITHUB_BRANCH = 'main';
-  const GITHUB_PATH = 'training-data';
+  // ---------- [핵심 변경] 차트 CSV를 백그라운드에서 다운로드 (isSilent가 true이면 전체화면 로딩 제거) ----------
+  const fetchAndApplyCSV = async (fileObj, keepAccount = false, snapshot = START_CASH, isSilent = false) => {
+    if (!isSilent) {
+      setIsLoading(true);
+      setLoadStatus(`차트 불러오는 중: ${fileObj.name}`);
+    }
+    try {
+      const res = await fetch(fileObj.download_url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+      const parsed = parseCustomData(text);
+      if (!parsed || parsed.length < 2) throw new Error('유효한 데이터가 없습니다.');
+      
+      applyDataset(parsed, fileObj.name, keepAccount, snapshot);
+    } catch (err) {
+      console.error(err);
+      setMessage(`차트 로드 실패: ${err.message}`);
+    } finally {
+      if (!isSilent) {
+        setIsLoading(false);
+      }
+    }
+  };
 
+  // ---------- 초기 깃허브 Chart_data 폴더 목록 스캔 ----------
   useEffect(() => {
     (async () => {
       const storage = getStorageApi();
-      try {
-        const cached = storage ? await storage.get(CACHE_KEY) : null;
-        if (cached) {
-          const payload = JSON.parse(cached.value);
-          const datasets = payload.map((d, i) => ({ id: `gh:${i}:${d.name}`, name: d.name, kind: 'saved', data: d.rows.map((r, idx) => ({ idx, date: r[0], open: r[1], high: r[2], low: r[3], close: r[4], ma5: r[5] ?? undefined, ma20: r[6] ?? undefined, ma60: r[7] ?? undefined, ma120: r[8] ?? undefined, volume: r[9] ?? 0, range: [r[3], r[2]] })) }));
-          setGithubDatasets(datasets);
-          const pick = datasets[Math.floor(Math.random() * datasets.length)];
-          const start = randomStart(pick.data.length);
-          setAllData(pick.data); setDataSource(pick.name); setCurrentIndex(start); setPrice(pick.data[start].close);
-          setIsLoading(false);
-        }
-      } catch (err) { console.warn('캐시 복원 실패:', err); }
+      let activeToken = githubToken;
 
-      // 브라우저 저장소에서 토큰 및 자동 잠금해제 상태 복원 (★핵심: 최초 1번 저장 시 평생 유지)
       if (storage) {
         try {
           const cachedToken = await storage.get('git_token_custom');
           if (cachedToken && cachedToken.value) {
             setGithubToken(cachedToken.value);
+            activeToken = cachedToken.value;
             setIsUnlocked(true);
-            console.log('브라우저에 보관된 사용자 개인 토큰 로드 성공');
           } else {
             const unlockedCached = await storage.get('sim_unlocked');
             if (unlockedCached && unlockedCached.value === 'true') {
@@ -301,49 +283,41 @@ export default function TradingSimulator() {
         } catch (e) { console.warn('설정 불러오기 실패:', e); }
       }
 
-      if (githubDatasets.length > 0) return;
-
+      setLoadStatus('깃허브 차트 데이터 폴더 스캔 중...');
       try {
-        const candidateUrls = [AUTO_LOAD_ZIP_URL];
-        if (typeof window !== 'undefined') {
-          candidateUrls.push(new URL('./KOSDAQ_Kospi_50.zip', window.location.href).toString());
-          candidateUrls.push('/KOSDAQ_Kospi_50.zip');
+        const headers = {};
+        if (activeToken) {
+          headers['Authorization'] = `Bearer ${activeToken}`;
         }
-        let loadedDatasets = null;
-        for (const zipUrl of [...new Set(candidateUrls)]) {
-          try {
-            setLoadStatus(`ZIP 다운로드 중... (${zipUrl})`);
-            const res = await fetch(zipUrl, { signal: AbortSignal.timeout(30000), cache: 'no-store' });
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const buffer = await res.arrayBuffer();
-            const magic = new Uint8Array(buffer.slice(0, 4));
-            if (!(magic[0] === 0x50 && magic[1] === 0x4B && magic[2] === 0x03 && magic[3] === 0x04)) throw new Error('유효한 ZIP 아님');
-            setLoadStatus('CSV 파싱 중...');
-            const datasets = [];
-            for (const en of listZipEntries(buffer).filter(en => /\.(csv|txt)$/i.test(en.name) && en.uncompSize > 0 && !en.name.includes('__MACOSX') && !en.name.split('/').pop().startsWith('.'))) {
-              try {
-                const parsed = parseCustomData(await getZipEntryText(buffer, en));
-                if (parsed && parsed.length >= 2) datasets.push({ id: `gh:${datasets.length}:${en.name}`, name: en.name, kind: 'saved', data: parsed });
-              } catch {}
-            }
-            if (!datasets.length) throw new Error('CSV 없음');
-            loadedDatasets = datasets; break;
-          } catch (err) { console.warn(`ZIP 실패 (${zipUrl}):`, err); }
+        
+        const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${GITHUB_CHART_PATH}?ref=${GITHUB_BRANCH}`;
+        const res = await fetch(url, { headers });
+        if (!res.ok) throw new Error(`HTTP ${res.status} — 차트 폴더(Chart_data) 확인 불가`);
+        
+        const contents = await res.json();
+        const files = contents.filter(item => item.type === 'file' && /\.(csv|txt)$/i.test(item.name));
+        
+        if (files.length === 0) {
+          throw new Error('Chart_data 폴더 안에 주식 CSV 파일이 존재하지 않습니다.');
         }
-        if (!loadedDatasets) throw new Error('ZIP 로드 실패');
-        try {
-          if (storage) await storage.set(CACHE_KEY, JSON.stringify(loadedDatasets.map(d => ({ name: d.name, rows: d.data.map(r => [r.date, r.open, r.high, r.low, r.close, r.ma5 ?? null, r.ma20 ?? null, r.ma60 ?? null, r.ma120 ?? null, r.volume]) }))));
-        } catch (e) { console.warn('캐시 저장 실패:', e.message); }
-        setGithubDatasets(loadedDatasets);
-        const pick = loadedDatasets[Math.floor(Math.random() * loadedDatasets.length)];
-        const start = randomStart(pick.data.length);
-        setAllData(loadedDatasets[0].data); setDataSource(loadedDatasets[0].name); setCurrentIndex(start); setPrice(loadedDatasets[0].data[start].close);
+
+        setGithubFileList(files);
+        
+        // 첫 시작 시 수많은 파일 중 무작위로 하나 골라 로딩 (최초 로딩이므로 로딩 화면 띄움)
+        const pick = files[Math.floor(Math.random() * files.length)];
+        await fetchAndApplyCSV(pick, false, START_CASH, false);
+
       } catch (err) {
-        setLoadStatus(`로드 실패 (${err.message}) — 랜덤 데이터로 시작`);
-        const d = generateData(300); const start = randomStart(d.length);
-        setAllData(d); setDataSource('랜덤 데이터'); setCurrentIndex(start); setPrice(d[start].close);
+        console.warn('깃허브 자동스캔 실패, 로컬 랜덤 차트로 시작합니다.', err.message);
+        setLoadStatus(`목록 갱신 실패 (${err.message})`);
+        const d = generateData(300); 
+        const start = randomStart(d.length);
+        setAllData(d); 
+        setDataSource('랜덤 데이터'); 
+        setCurrentIndex(start); 
+        setPrice(d[start].close);
+        setIsLoading(false);
       }
-      setIsLoading(false);
     })();
   }, []);
 
@@ -510,10 +484,8 @@ export default function TradingSimulator() {
     console.log("[Shortcut System] 단축키 감지 리스너가 등록되었습니다.");
 
     const handleKeyDown = (e) => {
-      // 1. 눌린 키 정보 로깅
       console.log(`[Shortcut System] Key pressed: key='${e.key}', code='${e.code}'`);
 
-      // 2. 입력창 활성화 여부 확인
       const isInputActive = document.activeElement && (
         document.activeElement.tagName === 'INPUT' ||
         document.activeElement.tagName === 'TEXTAREA' ||
@@ -525,7 +497,6 @@ export default function TradingSimulator() {
         return;
       }
 
-      // 3. 키 매핑 처리
       if (e.key === 'ArrowRight') {
         e.preventDefault();
         console.log("[Shortcut System] ▶ ArrowRight 감지: advanceDays(1) 실행");
@@ -576,10 +547,13 @@ export default function TradingSimulator() {
 
   const resetAll = () => {
     setMessage(null);
-    const pool = [...githubDatasets, ...customDatasets];
-    if (!pool.length) { applyDataset(generateData(300), '랜덤 데이터'); return; }
-    const pick = pool[Math.floor(Math.random() * pool.length)];
-    applyDataset(pick.data, pick.name);
+    if (githubFileList.length > 0) {
+      const pick = githubFileList[Math.floor(Math.random() * githubFileList.length)];
+      // 리셋 시에도 조용히(isSilent = true) 불러옴
+      fetchAndApplyCSV(pick, false, START_CASH, true);
+    } else {
+      applyDataset(generateData(300), '랜덤 데이터');
+    }
   };
 
   const liquidateHoldings = () => {
@@ -592,7 +566,7 @@ export default function TradingSimulator() {
     setPendingOrders([]); return finalCash;
   };
 
-  // ---------- CSV 데이터 가공 (종목 코드, 이번차트 최종 수익률 컬럼 추가) ----------
+  // ---------- CSV 데이터 가공 ----------
   const generateExportCsvData = (logs, dataList, srcName, returnPctVal) => {
     const validTrades = logs.filter(t => t.action !== 'CANCEL');
     if (!validTrades.length) return null;
@@ -645,10 +619,10 @@ export default function TradingSimulator() {
   const directUploadToGithub = async (csvContent, fileName) => {
     try {
       if (!githubToken) {
-        console.error('GitHub 토큰이 유효하지 않거나 로드되지 않았습니다.');
+        console.error('GitHub 토큰이 유효하지 않습니다.');
         return false;
       }
-      const cleanPath = GITHUB_PATH.replace(/\/+$/, '');
+      const cleanPath = GITHUB_LOG_PATH.replace(/\/+$/, '');
       const fullPath = cleanPath ? `${cleanPath}/${fileName}` : fileName;
 
       const bytes = new TextEncoder().encode(csvContent);
@@ -676,11 +650,7 @@ export default function TradingSimulator() {
 
       if (!response.ok) {
         const errorDetail = await response.json().catch(() => ({}));
-        console.error('GitHub API 에러 세부사항:', {
-          status: response.status,
-          statusText: response.statusText,
-          responseBody: errorDetail
-        });
+        console.error('GitHub API 에러 세부사항:', errorDetail);
         return false;
       }
 
@@ -691,20 +661,18 @@ export default function TradingSimulator() {
     }
   };
 
-  // ---------- [자동 업로드] 새로고침 및 다음차트 연동 ----------
+  // ---------- [자동 업로드] 새로고침 및 다음차트 연동 (Silent로 호출) ----------
   const refreshChartOnly = async () => {
     setMessage(null);
     setAutoSaveStatus('');
 
     const validTrades = tradeLog.filter(t => t.action !== 'CANCEL');
     
-    // 1. 비밀번호인증이 활성화되어 있고 매매기록이 있는 경우
     if (isUnlocked) {
       if (validTrades.length > 0) {
         setAutoSaveStatus('저장 중...');
         const exportData = generateExportCsvData(tradeLog, allData, dataSource, chartReturnPct);
         if (exportData) {
-          // 비동기 업로드를 확실히 끝내고 다음 종목으로 넘어가도록 await 강제
           const success = await directUploadToGithub(exportData.csv, exportData.fileName);
           if (success) {
             setAutoSaveStatus('자동저장 성공');
@@ -720,16 +688,15 @@ export default function TradingSimulator() {
       setAutoSaveStatus('잠금상태 (저장 안 됨)');
     }
 
-    // 2. 이후 청산 및 다음 차트 로드 진행
     const snapshot = liquidateHoldings();
-    const pool = [...githubDatasets, ...customDatasets];
-    if (!pool.length) { applyDataset(generateData(300), '랜덤 데이터', true, snapshot); return; }
-    const pick = pool[Math.floor(Math.random() * pool.length)];
-    try {
-      const parsed = pick.data ? pick.data : await getParsedDataset(pick);
-      if (!parsed || parsed.length < 2) { applyDataset(generateData(300), '랜덤 데이터', true, snapshot); return; }
-      applyDataset(parsed, pick.name, true, snapshot);
-    } catch { applyDataset(generateData(300), '랜덤 데이터', true, snapshot); }
+    
+    // 차트를 불러올 때 isSilent = true 를 넘겨 화면 깜빡임 차단
+    if (githubFileList.length > 0) {
+      const pick = githubFileList[Math.floor(Math.random() * githubFileList.length)];
+      await fetchAndApplyCSV(pick, true, snapshot, true); 
+    } else {
+      applyDataset(generateData(300), '랜덤 데이터', true, snapshot);
+    }
   };
 
   const topUpCash = () => {
@@ -815,7 +782,7 @@ export default function TradingSimulator() {
           await storage.set('git_token_custom', passwordInput);
         } catch {}
       }
-      setMessage('개인 GitHub 토큰이 브라우저에 안전하게 저장되었습니다 (최초 1회 입력 유지).');
+      setMessage('개인 GitHub 토큰이 브라우저에 안전하게 저장되었습니다.');
     } else {
       setMessage('비밀번호가 일치하지 않습니다.');
     }
@@ -832,7 +799,7 @@ export default function TradingSimulator() {
     setGitUploadStatus('uploading');
     const stockCode = dataSource.match(/\d+/)?.[0] || 'RANDOM';
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const fileName = `training_${stockCode}_${exportRange.from}_to_${exportRange.to}_${timestamp}.csv`;
+    const fileName = `training_${stockCode}_${exportRange.from}_to_${exportRange.to}_timestamp.csv`;
     const success = await directUploadToGithub(exportCsv, fileName);
     if (success) {
       setGitUploadStatus('success');
@@ -845,15 +812,12 @@ export default function TradingSimulator() {
 
   const visibleTrades = useMemo(() => tradeLog.filter(t => t.idx >= (chartData[0]?.idx ?? 0) && t.action !== 'CANCEL'), [tradeLog, chartData]);
 
-  // ── 스타일 상수 (라이트 테마) ──
+  // ── 스타일 상수 ──
   const s = {
     bg: 'bg-white', border: 'border-gray-200', card: 'bg-gray-50 border border-gray-200 rounded-lg p-3',
     text: 'text-gray-900', muted: 'text-gray-500', label: 'text-gray-600',
     input: 'bg-white border border-gray-300 rounded px-2 py-1.5 text-sm font-mono outline-none focus:border-blue-400',
     btn: 'text-xs px-3 py-2 rounded border border-gray-300 text-gray-600 hover:text-gray-900 hover:border-gray-400 transition-colors',
-    btnBuy: 'flex items-center justify-center gap-1 bg-red-50 border border-red-400 text-red-600 rounded py-2.5 text-sm font-semibold hover:bg-red-100 transition-colors',
-    btnSell: 'flex items-center justify-center gap-1 bg-blue-50 border border-blue-400 text-blue-600 rounded py-2.5 text-sm font-semibold hover:bg-blue-100 transition-colors',
-    btnNext: 'flex items-center justify-center gap-1 bg-emerald-50 border border-emerald-400 text-emerald-700 rounded py-2.5 text-sm font-semibold hover:bg-emerald-100 transition-colors disabled:opacity-40',
   };
 
   if (isLoading) {
@@ -893,47 +857,23 @@ export default function TradingSimulator() {
             </div>
             <div className="bg-white rounded-lg border border-gray-200 p-3 space-y-2">
               <div className="flex items-center justify-between">
-                <p className="text-[11px] text-gray-700 font-semibold">📦 기본 데이터 ({githubDatasets.length}종목)</p>
+                <p className="text-[11px] text-gray-700 font-semibold">📦 기본 데이터 ({githubFileList.length}종목)</p>
                 <div className="flex gap-2">
-                  <button onClick={() => { if (!githubDatasets.length) return; const pick = githubDatasets[Math.floor(Math.random() * githubDatasets.length)]; applyDataset(pick.data, pick.name); setShowDataPanel(false); }} className="text-[10px] px-2 py-0.5 rounded border border-emerald-400 text-emerald-600 hover:bg-emerald-50 transition-colors">🎲 랜덤 선택</button>
-                  <button onClick={async () => { try { const storage = getStorageApi(); if (storage) await storage.delete(CACHE_KEY); } catch {} setMessage('캐시 삭제됨. 새로고침하면 최신 데이터를 받습니다.'); setShowDataPanel(false); }} className="text-[10px] px-2 py-0.5 rounded border border-gray-300 text-gray-500 hover:text-gray-700 hover:border-gray-400 transition-colors">🔄 캐시 새로고침</button>
+                  {/* 사이드바 리스트에서 임의 선택 시에도 비동기 무음(isSilent) 로드 적용 */}
+                  <button onClick={() => { if (!githubFileList.length) return; const pick = githubFileList[Math.floor(Math.random() * githubFileList.length)]; fetchAndApplyCSV(pick, false, START_CASH, true); setShowDataPanel(false); }} className="text-[10px] px-2 py-0.5 rounded border border-emerald-400 text-emerald-600 hover:bg-emerald-50 transition-colors">🎲 랜덤 선택</button>
                 </div>
               </div>
-              {githubDatasets.length > 0 ? (
+              {githubFileList.length > 0 ? (
                 <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
-                  {githubDatasets.map(d => (
-                    <button key={d.id} onClick={() => { applyDataset(d.data, d.name); setShowDataPanel(false); }}
+                  {githubFileList.map(d => (
+                    <button key={d.name} onClick={() => { fetchAndApplyCSV(d, false, START_CASH, true); setShowDataPanel(false); }}
                       className={`text-[11px] px-2 py-1 rounded border ${dataSource === d.name ? 'border-emerald-500 text-emerald-700 bg-emerald-50' : 'border-gray-300 text-gray-600'} hover:border-gray-400 hover:text-gray-900 transition-colors`}>
                       {d.name.replace('_KS_history.csv','').replace('_KQ_history.csv','')}
                     </button>
                   ))}
                 </div>
-              ) : <p className="text-[10px] text-amber-600">GitHub 데이터 로드 실패. 새로고침하거나 직접 파일을 올려주세요.</p>}
-              <p className="text-[10px] text-gray-400">{AUTO_LOAD_ZIP_URL}</p>
+              ) : <p className="text-[10px] text-amber-600">등록된 CSV 파일이 없습니다. 깃허브 `Chart_data` 폴더에 주식 데이터 CSV 파일을 업로드해주세요.</p>}
             </div>
-            <div className="border border-dashed border-gray-300 rounded-lg p-4 text-center">
-              <label className="inline-flex items-center gap-2 text-sm px-4 py-2 rounded bg-emerald-50 border border-emerald-400 text-emerald-700 hover:bg-emerald-100 transition-colors cursor-pointer">
-                <Upload size={14} /> .csv / .txt / .zip 파일 업로드
-                <input type="file" accept=".csv,.txt,.zip" multiple onChange={handleFileUpload} className="hidden" />
-              </label>
-              <p className="text-[10px] text-gray-400 mt-2">형식: 날짜,시가,고가,저가,종가,MA5,MA20,MA60,MA120,거래량</p>
-            </div>
-            {customDatasets.length > 0 && (
-              <div>
-                <p className="text-[11px] text-gray-500 mb-1">등록된 데이터 ({customDatasets.length}개)</p>
-                <div className="space-y-1">
-                  {customDatasets.map((d, i) => (
-                    <div key={d.id} className="flex items-center justify-between bg-white rounded px-2 py-1.5 text-xs border border-gray-200">
-                      <span className="text-gray-700 truncate mr-2">{d.name}</span>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <button onClick={() => useEntry(d)} className="text-emerald-600 hover:text-emerald-800">사용</button>
-                        <button onClick={() => removeDataset(i)} className="text-gray-400 hover:text-red-500"><X size={13} /></button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
             <details className="text-xs">
               <summary className="cursor-pointer text-gray-500 hover:text-gray-700">직접 텍스트로 붙여넣기</summary>
               <div className="mt-2 space-y-2">
@@ -941,7 +881,6 @@ export default function TradingSimulator() {
                 <button onClick={applyCustomData} className="text-xs px-3 py-1.5 rounded bg-emerald-50 border border-emerald-400 text-emerald-700 hover:bg-emerald-100 transition-colors">이 데이터로 시작</button>
               </div>
             </details>
-            <button onClick={() => { applyDataset(generateData(300), '랜덤 데이터'); }} className="text-xs px-3 py-1.5 rounded border border-gray-300 text-gray-500 hover:text-gray-700 hover:border-gray-400 transition-colors">랜덤 데이터로 시작</button>
           </div>
         )}
 
@@ -949,12 +888,10 @@ export default function TradingSimulator() {
           {/* 좌측 */}
           <div className="space-y-2">
             <div className="bg-white rounded-lg border border-gray-200 p-3">
-              {/* 줌 컨트롤 및 비밀번호 인증 배치 영역 */}
               <div className="flex items-center justify-between mb-2 flex-wrap gap-1">
                 <div className="flex items-center gap-2 flex-wrap">
                   <button onClick={refreshChartOnly} className="flex items-center gap-1 text-[11px] px-2.5 py-1 rounded border border-emerald-400 bg-emerald-50 font-semibold text-emerald-700 hover:bg-emerald-100 transition-colors"><RotateCcw size={12} /> 새로고침 & 다음차트</button>
                   
-                  {/* 자동 저장 결과 확인 배지 */}
                   {autoSaveStatus && (
                     <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono ${
                       autoSaveStatus.includes('성공') ? 'bg-emerald-50 text-emerald-600 border border-emerald-200' :
@@ -974,7 +911,6 @@ export default function TradingSimulator() {
                   ))}
                   <button onClick={() => setZoomDays(allData.length)} className={`text-[11px] px-2 py-1 rounded border flex items-center gap-1 ${zoomDays >= allData.length ? 'border-gray-700 text-gray-900 bg-gray-100' : 'border-gray-300 text-gray-500'} hover:text-gray-900 hover:border-gray-400 transition-colors`}><Maximize2 size={11} /> 전체</button>
                   
-                  {/* 비밀번호(2420) 또는 개인 토큰(ghp_...) 입력란 */}
                   {!isUnlocked ? (
                     <input
                       type="password"
@@ -999,14 +935,13 @@ export default function TradingSimulator() {
                             storage.set('sim_unlocked', 'true').catch(() => {});
                             storage.set('git_token_custom', val).catch(() => {});
                           }
-                          setMessage('개인 GitHub 토큰이 브라우저에 안전하게 보관되었습니다 (최초 1회 등록 유지).');
+                          setMessage('개인 GitHub 토큰이 브라우저에 안전하게 저장되었습니다.');
                           setPasswordInput('');
                         }
                       }}
                       className="w-24 h-7 bg-white border border-gray-300 rounded px-2 text-xs outline-none focus:border-emerald-400"
                     />
                   ) : (
-                    /* 잠금 해제 상태일 때 배지를 클릭하면 인증 상태가 안전하게 초기화되어 입력창이 다시 뜹니다 */
                     <span 
                       onClick={async () => {
                         const storage = getStorageApi();
@@ -1016,7 +951,7 @@ export default function TradingSimulator() {
                         }
                         setIsUnlocked(false);
                         setGithubToken(import.meta.env.VITE_GITHUB_TOKEN || '');
-                        setMessage('인증이 초기화되었습니다. 새로운 토큰이나 코드를 입력할 수 있습니다.');
+                        setMessage('인증이 초기화되었습니다.');
                       }}
                       className="text-[10px] font-mono font-semibold text-emerald-600 bg-emerald-50 border border-emerald-200 rounded px-2 py-1 select-none cursor-pointer hover:bg-emerald-100 transition-colors"
                       title="클릭 시 인증 초기화 및 토큰 변경"
@@ -1103,7 +1038,7 @@ export default function TradingSimulator() {
                   <ChevronRight size={16} />
                 </button>
                 <button onClick={() => advanceDays(3)} disabled={currentIndex + 1 >= allData.length}
-                  title="3일 진행 (다음날 버튼 3번과 동일)"
+                  title="3일 진행"
                   className="flex items-center justify-center gap-0.5 bg-emerald-50 border border-emerald-300 text-emerald-600 rounded py-2 px-2.5 text-xs font-semibold hover:bg-emerald-100 transition-colors disabled:opacity-40">
                   <ChevronRight size={13} /><ChevronRight size={13} /> 3일
                 </button>
